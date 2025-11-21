@@ -21,7 +21,7 @@ cat ~/.ssh/personal_github.pub
 # 添加私钥
 Host github.com
     HostName github.com
-    User git
+    User rookie
     IdentityFile ~/.ssh/personal_github
     IdentitiesOnly yes
 
@@ -35,4 +35,4 @@ git remote rm origin
 # 添加远程仓库地址
 git remote add origin git@github.com:用户名/仓库名.git
 # 提交代码
-git push -u origin master
+git push -u origin main
