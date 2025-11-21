@@ -1,6 +1,6 @@
 import time
 from functools import wraps
-from .logger import logger
+from logger import logger
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 import traceback
 from io import StringIO
@@ -64,5 +64,3 @@ def retry(max_attempts=3, delay=1, backoff=1):
             return None  # 理论上不会执行到这里
         return wrapper
     return decorator
-
-

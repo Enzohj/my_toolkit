@@ -21,6 +21,7 @@ def setup_logger(level="INFO", output_file=None):
     :param level: 日志级别（字符串，如 "DEBUG", "INFO"）
     :param output_file: 日志输出文件路径
     """
+    level = level.upper()
     if HAS_LOGURU:
         # 清除所有已有 sink
         loguru_logger.remove()

@@ -1,7 +1,7 @@
 from concurrent.futures import ThreadPoolExecutor
 import multiprocessing as mp
 from tqdm import tqdm
-from .logger import logger
+from logger import logger
 
 # multi_thread
 # 受 GIL（全局解释器锁） 限制。

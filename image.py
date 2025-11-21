@@ -3,7 +3,7 @@ import requests
 import base64
 import io
 import os
-from .logger import logger
+from logger import logger
 
 IMG_FORMAT_MAP = {
     'jpg': 'JPEG',

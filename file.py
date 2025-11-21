@@ -1,4 +1,4 @@
-from .logger import logger
+from logger import logger
 import csv
 import json
 import pandas as pd
@@ -77,19 +77,17 @@ def read_csv(file_path, encoding='utf-8', delimiter=',', engine='pandas', skip_h
     if engine == 'pandas':
         df = pd.read_csv(file_path, sep=delimiter, encoding=encoding, **kwargs)
         logger.info(f"CSV file header: {df.columns.tolist()}")
-        logger.info(f"Read CSV file '{file_path}' using pandas. Shape: {df.shape}")
+        logger.info(f"Read CSV file '{file_path}' as dataFrame. Shape: {df.shape}")
         return df
-    elif engine == 'csv':
+    else:
         with open(file_path, 'r', encoding=encoding) as f:
             reader = csv.reader(f, delimiter=delimiter)
             if skip_header:
                 header = next(reader)
                 logger.info(f"CSV file header: {header}")
             data = [row for row in reader]
-            logger.info(f"Read CSV file '{file_path}' using csv module. {len(data)} rows read")
+            logger.info(f"Read CSV file '{file_path}' as list. {len(data)} rows read")
             return data
-    else:
-        raise ValueError(f"Unsupported engine: {engine}. Choose 'pandas' or 'csv'.")
 
 
 def write_csv(data, file_path, encoding='utf-8', append=False, delimiter=',', engine=None, header:list=None, **kwargs):
