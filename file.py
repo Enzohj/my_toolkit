@@ -1,4 +1,4 @@
-from logger import logger
+from .logger import logger
 import csv
 import json
 import pandas as pd
