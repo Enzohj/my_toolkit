@@ -1,4 +1,4 @@
-from .logger import logger
+from logger import logger
 import csv
 import json
 import pandas as pd
@@ -58,15 +58,15 @@ def write_txt(content, file_path, encoding='utf-8', append=False):
 # CSV 文件读写
 # ========================
 
-def read_csv(file_path, encoding='utf-8', delimiter=',', engine='pandas', skip_header=True, **kwargs):
+def read_csv(file_path, encoding='utf-8', sep=',', format='dataframe', skip_header=True, **kwargs):
     """
     读取 CSV 文件。
 
     参数:
         file_path (str): 文件路径。
         encoding (str): 文件编码，默认 utf-8。
-        delimiter (str): 分隔符，默认 ','。
-        engine (str): 读取引擎，'pandas' 或 'csv'，默认自动判断。
+        sep (str): 分隔符，默认 ','。
+        format (str): 读取格式，'dataframe' 或 'list'，默认 'dataframe'。
         skip_header (bool): 是否跳过第一行，默认 True。
         **kwargs: 传递给 pandas.read_csv 的额外参数。
 
@@ -74,23 +74,25 @@ def read_csv(file_path, encoding='utf-8', delimiter=',', engine='pandas', skip_h
         pd.DataFrame 或 list: 文件内容。
     """
 
-    if engine == 'pandas':
-        df = pd.read_csv(file_path, sep=delimiter, encoding=encoding, **kwargs)
+    if format == 'dataframe':
+        df = pd.read_csv(file_path, sep=sep, encoding=encoding, **kwargs)
         logger.info(f"CSV file header: {df.columns.tolist()}")
         logger.info(f"Read CSV file '{file_path}' as dataFrame. Shape: {df.shape}")
         return df
-    else:
+    elif format == 'list':
         with open(file_path, 'r', encoding=encoding) as f:
-            reader = csv.reader(f, delimiter=delimiter)
+            reader = csv.reader(f, delimiter=sep)
             if skip_header:
                 header = next(reader)
                 logger.info(f"CSV file header: {header}")
             data = [row for row in reader]
             logger.info(f"Read CSV file '{file_path}' as list. {len(data)} rows read")
             return data
+    else:
+        raise ValueError(f"Unsupported format: {format}. Choose 'dataframe' or 'list'.")
 
 
-def write_csv(data, file_path, encoding='utf-8', append=False, delimiter=',', engine=None, header:list=None, **kwargs):
+def write_csv(data, file_path, encoding='utf-8', append=False, sep=',', format='dataframe', header:list=None, **kwargs):
     """
     写入 CSV 文件。
 
@@ -99,31 +101,26 @@ def write_csv(data, file_path, encoding='utf-8', append=False, delimiter=',', en
         file_path (str): 文件路径。
         encoding (str): 文件编码，默认 utf-8。
         append (bool): 是否追加写入，默认 False。
-        delimiter (str): 分隔符，默认 ','。
-        engine (str): 写入引擎，'pandas' 或 'csv'，默认自动判断。
+        sep (str): 分隔符，默认 ','。
+        format (str): 写入格式，'dataframe' 或 'list'，默认 'dataframe'。
         header (list): 列名，默认 None。
         **kwargs: 传递给 pandas.to_csv 的额外参数。
     """
-    if engine is None:
-        if isinstance(data, pd.DataFrame):
-            engine = 'pandas'
-        else:
-            engine = 'csv'
 
-    if engine == 'pandas':
+    if format == 'dataframe':
         mode = 'a' if append else 'w'
-        data.to_csv(file_path, index=False, sep=delimiter, mode=mode, encoding=encoding, **kwargs)
+        data.to_csv(file_path, index=False, sep=sep, mode=mode, encoding=encoding, **kwargs)
         logger.info(f"Write DataFrame to '{file_path}' in {'append' if append else 'write'} mode. Shape: {data.shape}")
-    elif engine == 'csv':
+    elif format == 'list':
         with open(file_path, 'a' if append else 'w', newline='', encoding=encoding) as f:
-            writer = csv.writer(f, delimiter=delimiter)
+            writer = csv.writer(f, delimiter=sep)
             if header:
                 logger.info(f"CSV file header: {header}")
                 writer.writerow(header)
             writer.writerows(data)
             logger.info(f"Write {len(data)} rows to '{file_path}' in {'append' if append else 'write'} mode")
     else:
-        raise ValueError(f"Unsupported engine: {engine}. Choose 'pandas' or 'csv'.")
+        raise ValueError(f"Unsupported format: {format}. Choose 'dataframe' or 'list'.")
 
 
 # ========================
@@ -143,7 +140,7 @@ def read_json(file_path, encoding='utf-8'):
     """
     with open(file_path, 'r', encoding=encoding) as f:
         data = json.load(f)
-        logger.info(f"Read JSON file '{file_path}' successfully")
+        logger.info(f"Read JSON file '{file_path}' successfully, rows: {len(data)}")
         return data
 
 
@@ -311,3 +308,4 @@ def write_file(data, file_path:str, **kwargs):
         write_txt(data, file_path, **kwargs)
     else:
         raise ValueError(f"Unsupported file format: {file_path}")
+
