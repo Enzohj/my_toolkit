@@ -5,6 +5,7 @@ import pandas as pd
 import os
 from tqdm import tqdm
 from io import StringIO
+from typing import List, Dict
 
 # ========================
 # TXT 文件读写
@@ -92,7 +93,7 @@ def read_csv(file_path, encoding='utf-8', sep=',', format='dataframe', skip_head
         raise ValueError(f"Unsupported format: {format}. Choose 'dataframe' or 'list'.")
 
 
-def write_csv(data, file_path, encoding='utf-8', append=False, sep=',', format='dataframe', header:list=None, **kwargs):
+def write_csv(data, file_path, encoding='utf-8', append=False, sep=',', header:list=None, **kwargs):
     """
     写入 CSV 文件。
 
@@ -106,12 +107,13 @@ def write_csv(data, file_path, encoding='utf-8', append=False, sep=',', format='
         header (list): 列名，默认 None。
         **kwargs: 传递给 pandas.to_csv 的额外参数。
     """
-
-    if format == 'dataframe':
+    if isinstance(data, dict):
+        data = pd.DataFrame(data)
+    if isinstance(data, pd.DataFrame):
         mode = 'a' if append else 'w'
         data.to_csv(file_path, index=False, sep=sep, mode=mode, encoding=encoding, **kwargs)
         logger.info(f"Write DataFrame to '{file_path}' in {'append' if append else 'write'} mode. Shape: {data.shape}")
-    elif format == 'list':
+    elif isinstance(data, list):
         with open(file_path, 'a' if append else 'w', newline='', encoding=encoding) as f:
             writer = csv.writer(f, delimiter=sep)
             if header:
@@ -120,7 +122,7 @@ def write_csv(data, file_path, encoding='utf-8', append=False, sep=',', format='
             writer.writerows(data)
             logger.info(f"Write {len(data)} rows to '{file_path}' in {'append' if append else 'write'} mode")
     else:
-        raise ValueError(f"Unsupported format: {format}. Choose 'dataframe' or 'list'.")
+        raise ValueError(f"Unsupported format: {type(data)}. supported: pd.DataFrame, list, dict")
 
 
 # ========================

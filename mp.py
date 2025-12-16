@@ -2,6 +2,9 @@ from concurrent.futures import ThreadPoolExecutor
 import multiprocessing as mp
 from tqdm import tqdm
 from .logger import logger
+import numpy as np
+import pandas as pd
+from functools import partial
 
 # multi_thread
 # 受 GIL（全局解释器锁） 限制。
@@ -16,7 +19,7 @@ from .logger import logger
 
 NUM_WORKERS = mp.cpu_count()
 
-def apply_multi_thread(func, iterable, num_workers=NUM_WORKERS, show_progess=True, total_num=None):
+def apply_multi_thread(iterable, func, num_workers=NUM_WORKERS, show_progess=True, total_num=None):
     """
     使用多线程对 iterable 中的每个元素应用 func，并显示进度条。
     
@@ -50,7 +53,7 @@ def apply_multi_thread(func, iterable, num_workers=NUM_WORKERS, show_progess=Tru
             results = list(executor.map(wrapper, iterable))
     return results
 
-def apply_multi_process(func, iterable, num_workers=NUM_WORKERS, show_progess=True, total_num=None, use_starmap=False):
+def apply_multi_process(iterable, func, num_workers=NUM_WORKERS, show_progess=True, total_num=None, use_starmap=False):
     """
     使用多进程对 iterable 中的每个元素应用 func，并显示进度条。
     
@@ -60,6 +63,7 @@ def apply_multi_process(func, iterable, num_workers=NUM_WORKERS, show_progess=Tr
         num_workers: 进程数，默认为 cpu 核心数
         show_progess: 是否显示进度条，默认为 True
         total_num: 总任务数，默认为 None
+        use_starmap: 是否使用 starmap 方法，默认为 False
     
     返回:
         list: func 应用于每个元素后的结果列表
@@ -79,3 +83,13 @@ def apply_multi_process(func, iterable, num_workers=NUM_WORKERS, show_progess=Tr
             results = list(pool_map(func, iterable))
     return results
 
+
+def df_parallel_apply(df_series, func, num_workers=NUM_WORKERS, method="thread", show_progess=True):
+    if method == "thread":
+        results = apply_multi_thread(df_series, func, num_workers, show_progess)
+    elif method == "process":
+        results = apply_multi_process(df_series, func, num_workers, show_progess)
+    else:
+        raise ValueError(f"method must be 'thread' or 'process', but got {method}")
+    return pd.Series(results, index=df_series.index)
+    

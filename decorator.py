@@ -30,7 +30,7 @@ def timeout(seconds):
         return wrapper
     return decorator
 
-def retry(max_attempts=3, delay=1, backoff=1):
+def retry(max_attempts=3, delay=0.1, backoff=1):
     """
     装饰器：最多尝试 max_attempts 次，失败后等待 delay * (backoff ** 尝试次数) 秒
 
@@ -60,7 +60,8 @@ def retry(max_attempts=3, delay=1, backoff=1):
                         buffer = StringIO()
                         buffer.write(traceback.format_exc())
                         logger.error(f'\n{buffer.getvalue()}')
-                        raise last_exception  # 重新抛出最后一次异常
-            return None  # 理论上不会执行到这里
+                        logger.error(f"input args: {args}, input kwargs: {kwargs}")
+                        # raise last_exception  # 重新抛出最后一次异常
+                        return None  # 理论上不会执行到这里
         return wrapper
     return decorator
