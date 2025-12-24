@@ -1,183 +1,253 @@
-# awesome_toolkit
+# my_toolkit
+[![GitHub Repo stars](httpshttps://img.shields.io/github/stars/Enzohj/my_toolkit?style=social)](https://github.com/Enzohj/my_toolkit/stargazers)
+[![GitHub last commit](https://img.shields.io/github/last-commit/Enzohj/my_toolkit)](https://github.com/Enzohj/my_toolkit/commits/main)
+[![GitHub license](https://img.shields.io/github/license/Enzohj/my_toolkit)](https://github.com/Enzohj/my_toolkit/blob/main/LICENSE)
 
-A comprehensive Python utility toolkit that provides standardized interfaces for common operations including file handling, image processing, logging, parallel processing, and useful decorators.
+A simple and easy-to-use Python toolkit designed to streamline common operations in daily development.
+
+[ English | [中文](README_zh.md) ]
+
+---
 
 ## Table of Contents
 
-- [Introduction](#introduction)
-- [Features](#features)
-- [Installation](#installation)
-- [Usage](#usage)
-- [Contributing](#contributing)
-- [License](#license)
-- [Copyright](#copyright)
+- [✨ Features](#-features)
+- [💾 Installation](#-installation)
+- [🚀 Quickstart](#-quickstart)
+  - [File Operations](#file-operations)
+  - [Image Processing](#image-processing)
+  - [Logging](#logging)
+  - [Parallel Processing](#parallel-processing)
+  - [Useful Decorators](#useful-decorators)
+  - [Text Processing](#text-processing)
+- [📜 Scripts Usage](#-scripts-usage)
+- [🤔 FAQ](#-faq)
+- [📄 License](#-license)
 
-## Introduction
+## ✨ Features
 
-`awesome_toolkit` is a collection of Python utilities designed to simplify and standardize common programming tasks. It provides a clean, consistent API for file operations, image processing, logging, and multi-processing/multi-threading, allowing developers to focus on their core application logic rather than reimplementing these common functionalities.
+- **Unified File Interface**: Standardized read/write support for multiple formats, including `TXT`, `JSON`, `JSONL`, `CSV`, and `Parquet`, without worrying about the underlying details.
+- **Convenient Image Processing**: Effortlessly convert between `PIL.Image`, `Bytes`, and `Base64`, with support for loading images from local paths or URLs.
+- **Seamless Logging System**: Automatically compatible with both `loguru` and the standard `logging` library, providing a unified and concise logging interface.
+- **Efficient Parallel Processing**: Simplifies multi-threading and multi-processing tasks, with a built-in `tqdm` progress bar to make parallelization more intuitive.
+- **Practical Decorators**: Offers common decorators like `@timer`, `@timeout`, and `@retry` to enhance code robustness.
+- **Lightweight Text Utilities**: Includes common text processing functions for cleaning text, extracting `#hashtags#`, and more.
 
-## Features
+## 💾 Installation
 
-- **File Operations** (`file.py`)
-  - Support for multiple file formats: TXT, CSV, JSON, JSONL, Parquet
-  - Consistent read/write interfaces with comprehensive logging
-  - Flexible options for encoding, appending, and format-specific parameters
+1.  **Clone the Repository**
 
-- **Image Processing** (`image.py`)
-  - Seamless conversion between PIL Images, byte streams, and Base64 strings
-  - Support for loading images from local paths or URLs
-  - Image manipulation: resizing, visualization, format conversion
-  - Comprehensive error handling and logging
+    ```bash
+    git clone https://github.com/Enzohj/my_toolkit.git
+    cd my_toolkit
+    ```
 
-- **Logging** (`logger.py`)
-  - Unified logging interface that works with both loguru and standard logging
-  - Consistent API regardless of the underlying logging library
-  - Configurable log levels and output destinations
-  - Automatic fallback to standard logging when loguru is not available
+2.  **Install Dependencies**
 
-- **Multi-Processing/Multi-Threading** (`mp.py`)
-  - Simple interfaces for parallel execution using threads or processes
-  - Built-in progress tracking with tqdm
-  - Flexible worker count configuration
-  - Support for both finite collections and generators
+    The basic dependencies are listed in `setup_env/requirements.txt`.
 
-- **Decorators** (`decorator.py`)
-  - Timer decorator for measuring function execution time
-  - Timeout decorator for limiting function execution time
-  - Retry decorator for automatically retrying failed functions with configurable backoff
+    ```bash
+    pip install -r setup_env/requirements.txt
+    ```
 
-## Installation
+    Additionally, some features depend on the following third-party libraries. It is recommended to install them for the full experience:
 
-### Prerequisites
+    - `Pillow`: For image processing.
+    - `requests`: For downloading images from URLs.
+    - `tqdm`: For displaying progress bars in parallel computations.
 
-- Python 3.x
+    You can install all recommended dependencies with the following command:
 
-### Basic Installation
+    ```bash
+    pip install loguru pandas huggingface_hub pyarrow Pillow requests tqdm
+    ```
 
-1. Clone the repository:
-   ```bash
-   git clone https://github.com/Enzohj/awesome_toolkit.git
-   cd awesome_toolkit
-   ```
-
-2. Install the required dependencies:
-   ```bash
-   pip install -r setup_env/requirements.txt
-   ```
-
-### Additional Dependencies
-
-While only `loguru` is explicitly listed in requirements.txt, the toolkit has implicit dependencies on:
-
-- `Pillow` (PIL) - For image processing
-- `pandas` - For data handling and Parquet file operations
-- `requests` - For downloading images from URLs
-- `tqdm` - For progress bars
-
-Install these dependencies as needed:
-
-```bash
-pip install pillow pandas requests tqdm
-```
-
-## Usage
+## 🚀 Quickstart
 
 ### File Operations
 
+`my_toolkit` provides two high-level functions, `read_file` and `write_file`, which automatically select the appropriate reader/writer based on the file extension.
+
 ```python
-from awesome_toolkit.file import read_txt, write_txt, read_json, write_json, read_csv, write_csv, read_jsonl, write_jsonl, read_parquet, write_parquet
+from my_toolkit.file import read_file, write_file
 
-# TXT file operations
-lines = read_txt('data.txt', encoding='utf-8', as_lines=True)
-write_txt(['Line 1', 'Line 2'], 'output.txt', append=False)
+# Read a JSONL file
+data_list = read_file('data.jsonl')
 
-# JSON file operations
-data = read_json('config.json')
-write_json({'key': 'value'}, 'output.json', indent=4)
+# Read a CSV file as a DataFrame
+df = read_file('data.csv', format='dataframe')
 
-# JSONL file operations
-records = read_jsonl('data.jsonl')
-write_jsonl([{'id': 1}, {'id': 2}], 'output.jsonl')
+# Write a dictionary to a JSON file
+my_dict = {"name": "my_toolkit", "version": "1.0"}
+write_file(my_dict, 'config.json', indent=4)
 
-# CSV file operations
-rows = read_csv('data.csv', delimiter=',', engine='csv')
-write_csv([['id', 'name'], [1, 'John']], 'output.csv', header=None)
-
-# Parquet file operations
-df = read_parquet('data.parquet')
-write_parquet(df, 'output.parquet')
+# Append lines to a TXT file
+lines_to_append = ["hello", "world"]
+write_file(lines_to_append, 'log.txt', append=True)
 ```
 
 ### Image Processing
 
+The `ImageTool` class encapsulates all image-related operations, making it easy to convert between different formats.
+
 ```python
-from awesome_toolkit.image import ImageTool
+from my_toolkit.image import ImageTool
 
-# Load image from file path
-img_tool = ImageTool(img_path='image.jpg')
+# Load an image from a local path or URL
+img_tool = ImageTool(img_path='path/to/your/image.jpg')
+# img_tool = ImageTool(img_path='https://example.com/image.png')
 
-# Load image from URL
-img_tool = ImageTool(img_path='https://example.com/image.jpg')
+# Get the PIL.Image object
+pil_image = img_tool.img_pil
 
-# Convert between different formats
-img_bytes = ImageTool.img_to_bytes(img_tool.img_pil)
+# Convert between image formats
+img_bytes = ImageTool.img_to_bytes(pil_image)
 img_base64 = ImageTool.bytes_to_base64(img_bytes)
-img_pil = ImageTool.base64_to_img(img_base64)
 
-# Resize image
+# Restore an image from a Base64 string
+restored_pil_image = ImageTool.base64_to_img(img_base64)
+
+# Resize and save an image
 resized_img = img_tool.resize_img(scale=0.5)
-
-# Save image
-img_tool.save_img('output.jpg')
-
-# Visualize image
-img_tool.visualize_img()
+ImageTool(img_pil=resized_img).save_img('resized_image.png')
 ```
 
 ### Logging
 
-```python
-from awesome_toolkit.logger import logger, setup_logger
+A unified `logger` instance that works correctly whether `loguru` is installed or not.
 
-# Configure the logger
+```python
+from my_toolkit.logger import logger, setup_logger
+
+# Configure the log level and output file (optional)
 setup_logger(level="INFO", output_file="app.log")
 
 # Use the logger
-logger.debug("Debug message")
-logger.info("Info message")
-logger.warning("Warning message")
-logger.error("Error message")
-logger.critical("Critical message")
+logger.debug("This is a debug message.")
+logger.info("Welcome to my_toolkit!")
+logger.warning("Please note, this operation may take a long time.")
+logger.error("File not found!")
 ```
 
-### Multi-Processing/Multi-Threading
+### Parallel Processing
+
+Easily execute parallel tasks with `apply_multi_thread` and `apply_multi_process`.
 
 ```python
-from awesome_toolkit.mp import apply_multi_thread, apply_multi_process
+from my_toolkit.mp import apply_multi_thread, apply_multi_process
+import time
 
-# Define a function to process each item
-def process_item(x):
-    return x * 2
+def task(item):
+    time.sleep(0.1)
+    return item * 2
 
-# Process items using multiple threads
-data = list(range(100))
-results = apply_multi_thread(data, process_item, num_workers=8)
+data = range(20)
 
-# Process items using multiple processes
-results = apply_multi_process(data, process_item, num_workers=4)
+# Use multi-threading for I/O-bound tasks
+print("Starting multi-threading...")
+results_thread = apply_multi_thread(data, task, num_workers=4)
+print(f"Multi-threading results: {results_thread}")
 
-# Process a generator with progress bar
-def item_generator():
-    for i in range(100):
-        yield i
-
-results = apply_multi_thread(item_generator(), process_item, total_num=100)
+# Use multi-processing for CPU-bound tasks
+print("\nStarting multi-processing...")
+results_process = apply_multi_process(data, task, num_workers=4)
+print(f"Multi-processing results: {results_process}")
 ```
 
-## License
+### Useful Decorators
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+Simplify common functionalities with decorators.
 
-## Copyright
+```python
+from my_toolkit.decorator import timer, retry, timeout
 
-Copyright (c) 2025 Enzohj
+@retry(max_attempts=3, delay=1)
+@timeout(seconds=5)
+@timer
+def risky_operation(should_fail):
+    if should_fail:
+        raise ValueError("Operation failed!")
+    print("Operation successful!")
+    return "OK"
+
+# Example: The function will automatically retry and print the execution time
+print("--- First call (will fail and retry) ---")
+risky_operation(should_fail=True)
+
+print("\n--- Second call (will succeed directly) ---")
+risky_operation(should_fail=False)
+```
+
+### Text Processing
+
+Provides simple and fast text utility functions.
+
+```python
+from my_toolkit.text import normalize_text, extract_hashtag, remove_emoji_and_hashtag
+
+text = "   Welcome to #my_toolkit  , this is a #Python library!   😊 "
+
+# Normalize text (remove extra spaces)
+normalized = normalize_text(text)
+print(f"Normalized text: {normalized}")
+
+# Extract hashtags
+tags = extract_hashtag(text)
+print(f"Extracted tags: {tags}")
+
+# Remove emojis and hashtags
+cleaned_text = remove_emoji_and_hashtag(text)
+print(f"Cleaned text: {cleaned_text}")
+```
+
+## 📜 Scripts Usage
+
+The `scripts` directory contains some useful scripts for daily development and management.
+
+-   **`hang.sh`**: Runs a long-running command in the background and redirects its standard output and error to a log file.
+
+    ```bash
+    # Usage: ./scripts/hang.sh <your_command> [your_args...]
+    # Example: Run a Python script in the background
+    ./scripts/hang.sh python my_train_script.py --epochs 100
+    ```
+    Logs are saved by default to `./logs/hang_YYYYMMDD_HHMMSS.log`.
+
+-   **`download_hf_ckpt.sh`**: Downloads a model or dataset from a Hugging Face mirror (`hf-mirror.com`).
+
+    ```bash
+    # Usage: ./scripts/download_hf_ckpt.sh <model_name> [save_directory]
+    # Example: Download Llama-3-8B-Instruct to a specific directory
+    ./scripts/download_hf_ckpt.sh meta-llama/Meta-Llama-3-8B-Instruct /path/to/models
+    ```
+
+-   **`kill.sh` & `cmd.sh`**: Used for process management.
+    - `kill.sh`: Finds and kills processes based on a keyword, with an interactive confirmation prompt.
+      ```bash
+      # Usage: ./scripts/kill.sh <keyword>
+      # Example: Find and kill all processes containing "python"
+      ./scripts/kill.sh python
+      ```
+    - `cmd.sh`: Forcibly kills all processes using NVIDIA GPUs. Use with caution.
+      ```bash
+      # Usage: ./scripts/cmd.sh
+      ```
+
+## 🤔 FAQ
+
+**Q: Why do I get a `ModuleNotFoundError` when importing `my_toolkit` from another directory?**
+
+A: This is because the root directory of `my_toolkit` has not been added to Python's search path. You can solve this by adding the project's root directory to the `PYTHONPATH` environment variable.
+
+Add the following command to your `~/.bashrc` or `~/.zshrc` file:
+
+```bash
+# Replace /path/to/your/my_toolkit with the actual path to your project
+export PYTHONPATH=$PYTHONPATH:/path/to/your/my_toolkit
+```
+
+Then, run `source ~/.bashrc` or `source ~/.zshrc` to apply the changes.
+
+## 📄 License
+
+This repository is licensed under the [MIT License](LICENSE).
