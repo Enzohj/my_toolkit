@@ -30,7 +30,7 @@ def timeout(seconds):
         return wrapper
     return decorator
 
-def retry(max_attempts=3, delay=0.1, backoff=1):
+def retry(max_attempts=3, delay=0.1, backoff=1, default_return=None):
     """
     装饰器：最多尝试 max_attempts 次，失败后等待 delay * (backoff ** 尝试次数) 秒
 
@@ -38,6 +38,7 @@ def retry(max_attempts=3, delay=0.1, backoff=1):
         max_attempts (int): 最大尝试次数（至少 1）
         delay (float): 初始延迟时间（秒）
         backoff (float): 退避因子（1 表示固定间隔，>1 表示指数退避）
+        default_return: 当所有尝试都失败时的默认返回值
     """
     def decorator(func):
         @wraps(func)
@@ -55,13 +56,13 @@ def retry(max_attempts=3, delay=0.1, backoff=1):
                         time.sleep(sleep_time)
                     else:
                         # 最后一次失败，打印详细 traceback
-                        logger.error(f"function '{func.__name__}' failed in {max_attempts} attempts.")
+                        logger.error(f"function '{func.__name__}' failed in {max_attempts} attempts: {last_exception}")
                         logger.error("Detailed error information:")
                         buffer = StringIO()
                         buffer.write(traceback.format_exc())
                         logger.error(f'\n{buffer.getvalue()}')
-                        logger.error(f"input args: {args}, input kwargs: {kwargs}")
+                        logger.debug(f"input args: {args}, input kwargs: {kwargs}")
                         # raise last_exception  # 重新抛出最后一次异常
-                        return None  # 理论上不会执行到这里
+                        return default_return  
         return wrapper
     return decorator

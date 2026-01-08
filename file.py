@@ -47,9 +47,9 @@ def write_txt(content, file_path, encoding='utf-8', append=False):
     mode = 'a' if append else 'w'
     with open(file_path, mode, encoding=encoding) as f:
         if isinstance(content, list):
-            content = [line + '\n' for line in content]
-            f.writelines(content)
-            logger.info(f"Write {len(content)} lines to '{file_path}' in {'append' if append else 'write'} mode")
+            content_ = [line + '\n' for line in content]
+            f.writelines(content_)
+            logger.info(f"Write {len(content_)} lines to '{file_path}' in {'append' if append else 'write'} mode")
         else:
             f.write(content)
             logger.info(f"Write {len(content)} characters to '{file_path}' in {'append' if append else 'write'} mode")

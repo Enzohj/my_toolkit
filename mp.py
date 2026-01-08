@@ -48,7 +48,7 @@ def apply_multi_thread(iterable, func, num_workers=NUM_WORKERS, show_progess=Tru
         
     with ThreadPoolExecutor(max_workers=num_workers) as executor:
         if show_progess:
-            results = list(tqdm(executor.map(wrapper, iterable), total=total_num))
+            results = list(tqdm(executor.map(wrapper, iterable), total=total_num, leave=False))
         else:
             results = list(executor.map(wrapper, iterable))
     return results
@@ -84,12 +84,13 @@ def apply_multi_process(iterable, func, num_workers=NUM_WORKERS, show_progess=Tr
     return results
 
 
-def df_parallel_apply(df_series, func, num_workers=NUM_WORKERS, method="thread", show_progess=True):
+def df_parallel_apply(df, func, num_workers=NUM_WORKERS, method="thread", show_progess=True):
+    dict_list = df.to_dict('records')
     if method == "thread":
-        results = apply_multi_thread(df_series, func, num_workers, show_progess)
+        results = apply_multi_thread(dict_list, func, num_workers, show_progess)
     elif method == "process":
-        results = apply_multi_process(df_series, func, num_workers, show_progess)
+        results = apply_multi_process(dict_list, func, num_workers, show_progess)
     else:
         raise ValueError(f"method must be 'thread' or 'process', but got {method}")
-    return pd.Series(results, index=df_series.index)
+    return pd.Series(results, index=df.index)
     

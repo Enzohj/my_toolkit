@@ -23,3 +23,5 @@ PID=$!
 echo "✔ Command started in background"
 echo "✔ PID: $PID"
 echo "✔ Log: $LOG_FILE"
+echo "✔ Info: ps -ef | grep $PID"
+echo "✔ Kill: kill -9 $PID"
