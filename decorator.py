@@ -8,12 +8,15 @@ from io import StringIO
 def timer(func):
     @wraps(func)
     def wrapper(*args, **kwargs):
-        start_time = time.time()  # 记录开始时间
-        result = func(*args, **kwargs)  # 执行原函数
-        end_time = time.time()  # 记录结束时间
-        elapsed_time = end_time - start_time  # 计算耗时
-        logger.info(f"function: '{func.__name__}', latency: {elapsed_time:.4f} s")
-        return result
+        start_time = time.perf_counter()
+        try:
+            result = func(*args, **kwargs)
+            return result
+        finally:
+            # 无论函数是否抛出异常，都记录时间
+            end_time = time.perf_counter()
+            elapsed_time = end_time - start_time
+            logger.info(f"Function: '{func.__name__}', Elapsed: {elapsed_time:.4f}s")
     return wrapper
 
 def timeout(seconds):
@@ -25,12 +28,12 @@ def timeout(seconds):
                 try:
                     result = future.result(timeout=seconds)
                 except FutureTimeoutError:
-                    raise TimeoutError(f"Function '{func.__name__}' timed out after {seconds} seconds.")
+                    raise TimeoutError(f"Function '{func.__name__}', timed out after {seconds} seconds.")
                 return result
         return wrapper
     return decorator
 
-def retry(max_attempts=3, delay=0.1, backoff=1, default_return=None):
+def retry(max_attempts=3, delay=0.1, backoff=1, fail_return=None):
     """
     装饰器：最多尝试 max_attempts 次，失败后等待 delay * (backoff ** 尝试次数) 秒
 
@@ -63,6 +66,6 @@ def retry(max_attempts=3, delay=0.1, backoff=1, default_return=None):
                         logger.error(f'\n{buffer.getvalue()}')
                         logger.debug(f"input args: {args}, input kwargs: {kwargs}")
                         # raise last_exception  # 重新抛出最后一次异常
-                        return default_return  
+                        return fail_return  
         return wrapper
     return decorator
