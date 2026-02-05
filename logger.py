@@ -72,6 +72,8 @@ def setup_logger(level="INFO", output_file=None):
 
 
 class _LoggerWrapper:
+    def __init__(self):
+        pass
     def debug(self, msg, *args, **kwargs):
         if HAS_LOGURU:
             loguru_logger.opt(depth=1).debug(msg, *args, **kwargs)

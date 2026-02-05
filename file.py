@@ -7,6 +7,7 @@ from tqdm import tqdm
 from io import StringIO
 from typing import List, Optional, Any
 from pathlib import Path
+import pickle
 
 # ========================
 # TXT 文件读写
@@ -273,6 +274,39 @@ def write_parquet(df:pd.DataFrame, file_path, **kwargs):
     logger.info(f"Write Parquet file '{file_path}'. Shape: {df.shape}")
 
 # ========================
+# Pickle 文件读写
+# ========================
+def read_pickle(file_path, **kwargs):
+    """
+    读取 Pickle 文件。
+
+    参数:
+        file_path (str): 文件路径。
+        **kwargs: 传递给 pickle.load 的额外参数。
+
+    返回:
+        Any: 从 Pickle 文件中反序列化的对象。
+    """
+    with open(file_path, 'rb') as f:
+        data = pickle.load(f, **kwargs)
+        logger.info(f"Read Pickle file '{file_path}'")
+        return data
+
+def write_pickle(obj, file_path, **kwargs):
+    """
+    写入 Pickle 文件。
+
+    参数:
+        obj (Any): 要序列化的对象。
+        file_path (str): 文件路径。
+        **kwargs: 传递给 pickle.dump 的额外参数。
+    """
+    with open(file_path, 'wb') as f:
+        pickle.dump(obj, f, **kwargs)
+        logger.info(f"Write Pickle file '{file_path}'")
+
+
+# ========================
 # 统一入口 (Dispatcher)
 # ========================
 
@@ -288,7 +322,8 @@ def read_file(file_path, **kwargs) -> Any:
         '.jsonl': read_jsonl,
         '.parquet': read_parquet,
         '.csv': read_csv,
-        '.txt': read_txt
+        '.txt': read_txt,
+        '.pickle': read_pickle
     }
 
     if suffix in dispatcher:
@@ -309,7 +344,8 @@ def write_file(data: Any, file_path, **kwargs) -> None:
         '.jsonl': write_jsonl,
         '.parquet': write_parquet,
         '.csv': write_csv,
-        '.txt': write_txt
+        '.txt': write_txt,
+        '.pickle': write_pickle
     }
 
     if suffix in dispatcher:

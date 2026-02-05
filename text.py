@@ -1,6 +1,8 @@
 import re
 
-def normalize_text(text):
+def normalize(text):
+    if text is None:
+        return ''
     normalized = re.sub(r'\s+', ' ', text).strip()
     return normalized
 
@@ -33,13 +35,12 @@ def remove_emoji_and_hashtag(text):
     )
     
     text = emoji_pattern.sub('', text)
-    text = normalize_text(text)
     return text
 
 if __name__ == '__main__':
     text = 'Hello, \n #World! 你好，      #世界！ 😊\t 123#2026'
     print(text)
-    print(normalize_text(text))
+    print(normalize(text))
     print(extract_hashtag(text))
     print(remove_emoji_and_hashtag(text))
-    print(normalize_text(remove_emoji_and_hashtag(text)))
+    print(normalize(remove_emoji_and_hashtag(text)))

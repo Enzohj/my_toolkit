@@ -92,5 +92,5 @@ def df_parallel_apply(df, func, num_workers=NUM_WORKERS, method="thread", show_p
         results = apply_multi_process(dict_list, func, num_workers, show_progess)
     else:
         raise ValueError(f"method must be 'thread' or 'process', but got {method}")
-    return pd.Series(results, index=df.index)
+    return results
     

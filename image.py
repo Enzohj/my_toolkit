@@ -1,3 +1,5 @@
+import pillow_heif
+pillow_heif.register_heif_opener()
 from PIL import Image
 import requests
 import base64
