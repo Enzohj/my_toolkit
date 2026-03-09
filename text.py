@@ -1,17 +1,27 @@
 import re
 
 def normalize(text):
-    if text is None:
+    if not isinstance(text, str):
         return ''
     normalized = re.sub(r'\s+', ' ', text).strip()
     return normalized
 
-def extract_hashtag(text, remove_duplicates=False):
+def extract_hashtag(text, remove_duplicates=True):
     pattern = r'#([a-zA-Z\u4e00-\u9fff0-9][\w\u4e00-\u9fff\+\-]*)'
     tags = re.findall(pattern, text)
     if remove_duplicates:
         tags = list(set(tags))
     return tags
+
+def get_pure_text_hashtag(text):
+    text = normalize(text)
+    pattern = r'#([a-zA-Z\u4e00-\u9fff0-9][\w\u4e00-\u9fff\+\-]*)'
+    tags = re.findall(pattern, text)
+    pure_text = re.sub(pattern, '', text)
+    pure_text = normalize(pure_text)
+    if len(tags) == 0:
+        return pure_text, ''
+    return pure_text, '#'+' #'.join(tags)
 
 def remove_emoji_and_hashtag(text):
     # Remove hashtags (including the # symbol)
@@ -39,8 +49,9 @@ def remove_emoji_and_hashtag(text):
 
 if __name__ == '__main__':
     text = 'Hello, \n #World! 你好，      #世界！ 😊\t 123#2026'
-    print(text)
-    print(normalize(text))
-    print(extract_hashtag(text))
-    print(remove_emoji_and_hashtag(text))
-    print(normalize(remove_emoji_and_hashtag(text)))
+    # print(text)
+    # print(normalize(text))
+    # print(extract_hashtag(text))
+    # print(remove_emoji_and_hashtag(text))
+    # print(normalize(remove_emoji_and_hashtag(text)))
+    print(get_pure_text_hashtag(text))
