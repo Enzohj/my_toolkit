@@ -62,9 +62,9 @@ NUM_WORKERS: int = int(
 def _call_func(func: Callable, element: Any) -> Any:
     """根据 element 的类型选择调用方式：
 
-    - dict        → func(**element)
-    - tuple / list → func(*element)
-    - 其他         → func(element)
+    - dict           → func(**element)
+    - tuple / list   → func(*element)
+    - other          → func(element)
     """
     if isinstance(element, dict):
         return func(**element)
@@ -77,11 +77,15 @@ def _resolve_iterable(iterable: Any) -> tuple[list, Optional[int]]:
     """将各种可迭代类型统一转为 list，并在遇到 DataFrame 时转为 records。"""
     if isinstance(iterable, pd.DataFrame):
         iterable = iterable.to_dict(orient="records")
-    if hasattr(iterable, "__len__"):
+    if hasattr(iterable, "__len__") and hasattr(iterable, "__iter__"):
         return iterable, len(iterable)
     else:
-        logger.warning(f"!!! pay attention: iterable type is {type(iterable)}, convert to list...")
-        iterable = list(iterable)
+        logger.warning(f"!!! pay attention: iterable type is {type(iterable)}, try convert to list...")
+        try:
+            iterable = list(iterable)
+        except Exception as e:
+            logger.error(f"convert to list failed: {e}")
+            raise
         return iterable, len(iterable)
 
 
@@ -191,7 +195,6 @@ def apply_parallel(
                 iterator,
                 total=total_num,
                 desc=progress_desc,
-                unit="task",
                 dynamic_ncols=True,
             )
 

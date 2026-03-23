@@ -1,71 +1,120 @@
 import time
-from functools import wraps
-from .logger import logger
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 import traceback
-from io import StringIO
+from functools import wraps
+from typing import Any, Callable, Optional, Tuple, Type, TypeVar
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 
-def timer(func):
+from .logger import logger
+
+F = TypeVar("F", bound=Callable[..., Any])
+
+__all__ = ["timer", "timeout", "retry"]
+
+
+# ────────────────────────────── timer ──────────────────────────────
+
+def timer(func: F) -> F:
+    """记录函数执行耗时（秒），无论成功或异常均会输出。"""
+
     @wraps(func)
     def wrapper(*args, **kwargs):
-        start_time = time.perf_counter()
+        start = time.perf_counter()
         try:
-            result = func(*args, **kwargs)
-            return result
+            return func(*args, **kwargs)
         finally:
-            # 无论函数是否抛出异常，都记录时间
-            end_time = time.perf_counter()
-            elapsed_time = end_time - start_time
-            logger.info(f"Function: '{func.__name__}', Elapsed: {elapsed_time:.4f}s")
-    return wrapper
+            elapsed = time.perf_counter() - start
+            logger.info(f"Function '{func.__name__}' elapsed: {elapsed:.4f}s")
 
-def timeout(seconds):
-    def decorator(func):
+    return wrapper  # type: ignore[return-value]
+
+
+# ────────────────────────────── timeout ──────────────────────────────
+
+def timeout(seconds: float) -> Callable[[F], F]:
+    """
+    限制函数执行时间。超时后抛出 TimeoutError。
+
+    注意：底层使用 ThreadPoolExecutor，超时后线程本身不会被强制终止，
+    仅在调用侧抛出异常。如需真正中断，请考虑 multiprocessing 方案。
+    """
+    if seconds <= 0:
+        raise ValueError(f"timeout seconds must be positive, got {seconds}")
+
+    def decorator(func: F) -> F:
         @wraps(func)
         def wrapper(*args, **kwargs):
             with ThreadPoolExecutor(max_workers=1) as executor:
                 future = executor.submit(func, *args, **kwargs)
                 try:
-                    result = future.result(timeout=seconds)
+                    return future.result(timeout=seconds)
                 except FutureTimeoutError:
-                    raise TimeoutError(f"Function '{func.__name__}', timed out after {seconds} seconds.")
-                return result
-        return wrapper
+                    future.cancel()
+                    raise TimeoutError(
+                        f"Function '{func.__name__}' timed out after {seconds}s"
+                    )
+
+        return wrapper  # type: ignore[return-value]
+
     return decorator
 
-def retry(max_attempts=3, delay=0.1, backoff=1, fail_return=None):
+
+# ────────────────────────────── retry ──────────────────────────────
+
+def retry(
+    max_attempts: int = 3,
+    delay: float = 0.1,
+    backoff: float = 1,
+    exceptions: Tuple[Type[BaseException], ...] = (Exception,),
+    fail_return: Optional[Any] = None,
+    raise_on_failure: bool = False,
+) -> Callable[[F], F]:
     """
-    装饰器：最多尝试 max_attempts 次，失败后等待 delay * (backoff ** 尝试次数) 秒
+    重试装饰器：在指定异常发生时自动重试。
 
     参数:
-        max_attempts (int): 最大尝试次数（至少 1）
-        delay (float): 初始延迟时间（秒）
-        backoff (float): 退避因子（1 表示固定间隔，>1 表示指数退避）
-        default_return: 当所有尝试都失败时的默认返回值
+        max_attempts:    最大尝试次数（≥1）
+        delay:           初始延迟时间（秒）
+        backoff:         退避因子（1=固定间隔，>1=指数退避）
+        exceptions:      需要捕获并重试的异常类型元组
+        fail_return:     所有尝试失败后的默认返回值（仅 raise_on_failure=False 时生效）
+        raise_on_failure: True 时在最终失败后重新抛出异常，False 时返回 fail_return
     """
-    def decorator(func):
+    if max_attempts < 1:
+        raise ValueError(f"max_attempts must be >= 1, got {max_attempts}")
+
+    def decorator(func: F) -> F:
         @wraps(func)
         def wrapper(*args, **kwargs):
-            last_exception = None
+            last_exception: Optional[BaseException] = None
+
             for attempt in range(1, max_attempts + 1):
                 try:
                     return func(*args, **kwargs)
-                except Exception as e:
-                    last_exception = e
+                except exceptions as exc:
+                    last_exception = exc
+
                     if attempt < max_attempts:
                         sleep_time = delay * (backoff ** (attempt - 1))
-                        logger.debug(f"function '{func.__name__}' failed, attempt {attempt}: {e}")
-                        logger.debug(f"will retry in {sleep_time:.2f} seconds...")
+                        logger.debug(
+                            f"[retry] '{func.__name__}' attempt {attempt}/{max_attempts} "
+                            f"failed: {exc}; retrying in {sleep_time:.2f}s …"
+                        )
                         time.sleep(sleep_time)
                     else:
-                        # 最后一次失败，打印详细 traceback
-                        logger.error(f"function '{func.__name__}' failed in {max_attempts} attempts: {last_exception}")
-                        logger.error("Detailed error information:")
-                        buffer = StringIO()
-                        buffer.write(traceback.format_exc())
-                        logger.error(f'\n{buffer.getvalue()}')
-                        logger.debug(f"input args: {args}, input kwargs: {kwargs}")
-                        # raise last_exception  # 重新抛出最后一次异常
-                        return fail_return  
-        return wrapper
+                        logger.error(
+                            f"[retry] '{func.__name__}' exhausted {max_attempts} attempts. "
+                            f"Last error: {last_exception}"
+                        )
+                        logger.error(f"[retry] traceback:\n{traceback.format_exc()}")
+                        logger.debug(
+                            f"[retry] call args={args}, kwargs={kwargs}"
+                        )
+
+            # 所有尝试均失败
+            if raise_on_failure:
+                raise last_exception  # type: ignore[misc]
+            return fail_return
+
+        return wrapper  # type: ignore[return-value]
+
     return decorator
