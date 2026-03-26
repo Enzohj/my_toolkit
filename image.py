@@ -22,12 +22,17 @@ image.py - 通用图像处理工具模块
 
     # 转换格式并保存
     image.convert("webp").save("/tmp/photo.webp")
+
+    # 作为上下文管理器使用
+    with MyImage(url="https://example.com/photo.jpg") as img:
+        img.save("/tmp/photo.jpg")
 """
 
 from __future__ import annotations
 
 import base64
 import io
+import os
 import re
 from pathlib import Path
 from typing import Optional, Union
@@ -84,9 +89,12 @@ _MAGIC_BYTES: list[tuple[bytes, str]] = [
     (b"BM", "bmp"),
     (b"II\x2a\x00", "tiff"),
     (b"MM\x00\x2a", "tiff"),
-    # RIFF 容器需要额外判断子类型，单独处理
-    # HEIF/HEIC 的 ftyp box 长度可变，单独处理
 ]
+
+# HEIF/HEIC brand 标识（用于 ftyp box 检测）
+_HEIF_BRANDS: frozenset[str] = frozenset(
+    {"heic", "heix", "hevc", "hevx", "mif1", "msf1"}
+)
 
 # data-URL 正则：匹配 data:image/<fmt>;base64, 前缀
 _DATA_URL_RE: re.Pattern[str] = re.compile(
@@ -162,10 +170,8 @@ def _guess_format_from_suffix(path_or_url: str) -> Optional[str]:
 
     fmt = _normalize_format(suffix.lstrip("."))
     if fmt and fmt in SUPPORTED_FORMATS:
-        logger.debug("从后缀 '%s' 推断格式: %s", suffix, fmt)
         return fmt
 
-    logger.warning("后缀 '%s' 对应的格式 '%s' 不在支持列表中", suffix, fmt)
     return None
 
 
@@ -184,20 +190,23 @@ def _guess_format_from_bytes(data: bytes) -> Optional[str]:
     # 1. 标准 magic bytes 匹配
     for magic, fmt in _MAGIC_BYTES:
         if data[: len(magic)] == magic:
-            logger.debug("通过 magic bytes 识别格式: %s", fmt)
             return fmt
 
     # 2. RIFF 容器 → 检查是否为 WEBP
     if data[:4] == b"RIFF" and len(data) >= 12 and data[8:12] == b"WEBP":
-        logger.debug("通过 magic bytes 识别格式: webp")
         return "webp"
 
-    # 3. 回退到 Pillow 解析
+    # 3. HEIF/HEIC → ftyp box 检测
+    if len(data) >= 12 and data[4:8] == b"ftyp":
+        brand = data[8:12].decode("ascii", errors="ignore").strip("\x00").lower()
+        if brand in _HEIF_BRANDS:
+            return "heif"
+
+    # 4. 回退到 Pillow 解析
     try:
         with Image.open(io.BytesIO(data)) as img:
             pil_fmt = _normalize_format(img.format)
             if pil_fmt:
-                logger.debug("通过 Pillow 识别格式: %s", pil_fmt)
                 return pil_fmt
     except Exception:
         logger.warning("无法从 bytes 识别格式")
@@ -211,7 +220,10 @@ def _pillow_save_format(fmt: str) -> str:
 
 
 def _ensure_rgb_for_jpeg(img: Image.Image) -> Image.Image:
-    """若目标格式为 JPEG 且图像含 alpha 通道，转换为 RGB。
+    """若目标格式为 JPEG 且图像含不兼容模式，转换为 RGB。
+
+    JPEG 不支持 alpha 通道，也不直接支持 I（32-bit int）和 F（float）模式。
+    此函数统一将这些模式安全转换为 RGB。
 
     Args:
         img: 原始 Pillow Image。
@@ -219,13 +231,35 @@ def _ensure_rgb_for_jpeg(img: Image.Image) -> Image.Image:
     Returns:
         转换后的 Image（可能是同一个对象）。
     """
-    if img.mode in ("RGBA", "P", "PA", "LA"):
-        logger.debug("将模式 %s 转换为 RGB 以兼容 JPEG", img.mode)
-        # 对于 P 模式需先转 RGBA 再转 RGB，以正确处理透明色
-        if img.mode == "P":
-            img = img.convert("RGBA")
+    if img.mode in ("RGBA", "PA", "LA"):
+        logger.warning(f"将模式 {img.mode} 转换为 RGB 以兼容 JPEG")
         return img.convert("RGB")
+    if img.mode == "P":
+        logger.warning("将模式 P 转换为 RGBA 再转 RGB 以正确处理透明色")
+        return img.convert("RGBA").convert("RGB")
+    if img.mode in ("I", "F"):
+        logger.warning(f"将模式 {img.mode} 转换为 L 再转 RGB 以兼容 JPEG")
+        return img.convert("L").convert("RGB")
     return img
+
+
+def _strip_data_url_prefix(b64_string: str) -> tuple[Optional[str], str]:
+    """从 base64 字符串中分离 data URL 前缀。
+
+    Args:
+        b64_string: 可能包含 data:image/...;base64, 前缀的字符串。
+
+    Returns:
+        (从前缀提取的格式 或 None, 纯 base64 字符串)
+    """
+    b64_string = b64_string.strip()
+    match = _DATA_URL_RE.match(b64_string)
+    if match:
+        fmt = _normalize_format(match.group("fmt"))
+        pure_b64 = b64_string[match.end() :].strip()
+        logger.debug(f"_strip_data_url_prefix: 检测到 data URL 前缀, 格式={fmt}")
+        return fmt, pure_b64
+    return None, b64_string
 
 
 # ---------------------------------------------------------------------------
@@ -257,7 +291,7 @@ def download_bytes_from_url(
     if not url or not url.strip().startswith(("http://", "https://")):
         raise ValueError(f"URL 必须以 http:// 或 https:// 开头，收到: {url!r}")
 
-    logger.debug("开始从 URL 下载图片: %s", url)
+    # logger.debug(f"开始从 URL 下载图片: {url}")
 
     try:
         response = requests.get(url, timeout=timeout, stream=True)
@@ -282,7 +316,7 @@ def download_bytes_from_url(
             chunks.append(chunk)
 
         data = b"".join(chunks)
-        logger.debug("下载完成，数据大小: %d bytes", len(data))
+        # logger.debug(f"下载完成，数据大小: {len(data)} bytes")
         return data
 
     except requests.Timeout as exc:
@@ -298,6 +332,9 @@ def download_bytes_from_url(
 def bytes_to_img(data: bytes) -> Image.Image:
     """将二进制 bytes 转换为 Pillow Image。
 
+    注意: 返回的 Image 已调用 load()，数据完全驻留内存，
+    不依赖底层 BytesIO 缓冲区的生命周期。
+
     Args:
         data: 图像的原始字节数据。
 
@@ -310,10 +347,11 @@ def bytes_to_img(data: bytes) -> Image.Image:
     if not data:
         raise ImageFormatError("图像数据为空")
 
-    logger.debug("bytes_to_img: 输入数据大小 %d bytes", len(data))
+    # logger.debug(f"bytes_to_img: 输入数据大小 {len(data)} bytes")
     try:
-        img = Image.open(io.BytesIO(data))
-        # img.load()  # 确保数据完全读入内存
+        buf = io.BytesIO(data)
+        img = Image.open(buf)
+        img.load()  # 确保像素数据完全读入内存，防止 buf 被 GC 后读取失败
         return img
     except Exception as exc:
         raise ImageFormatError(f"无法解析图像数据: {exc}") from exc
@@ -324,7 +362,7 @@ def img_to_bytes(img: Image.Image, fmt: Optional[str] = None) -> bytes:
 
     Args:
         img: Pillow Image 对象。
-        fmt: 目标格式（小写），默认为 None 时使用 img.format 或 'png'。
+        fmt: 目标格式（小写），默认为 None 时使用 img.format 或 'jpeg'。
 
     Returns:
         编码后的图像字节数据。
@@ -337,12 +375,12 @@ def img_to_bytes(img: Image.Image, fmt: Optional[str] = None) -> bytes:
     save_fmt = _pillow_save_format(fmt)
     buf = io.BytesIO()
 
-    # 处理 RGBA -> JPEG 不支持 alpha 通道的场景
+    # 处理 JPEG 不支持的色彩模式
     save_img = _ensure_rgb_for_jpeg(img) if fmt == "jpeg" else img
 
     save_img.save(buf, format=save_fmt)
     data = buf.getvalue()
-    logger.debug("img_to_bytes: 编码为 %s, 大小 %d bytes", fmt, len(data))
+    # logger.debug(f"img_to_bytes: 编码为 {fmt}, 大小 {len(data)} bytes")
     return data
 
 
@@ -363,24 +401,14 @@ def base64_to_bytes(data: str) -> bytes:
     if not data or not data.strip():
         raise ValueError("base64 字符串不能为空")
 
-    data = data.strip()
-    match = _DATA_URL_RE.match(data)
-    if match:
-        raw_b64 = data[match.end() :]
-        logger.debug(
-            "base64_to_bytes: 检测到 data URL 前缀, MIME 格式=%s", match.group("fmt")
-        )
-    else:
-        raw_b64 = data
-
-    raw_b64 = raw_b64.strip()
+    _, pure_b64 = _strip_data_url_prefix(data)
 
     try:
-        decoded = base64.b64decode(raw_b64, validate=True)
+        decoded = base64.b64decode(pure_b64, validate=True)
     except Exception as exc:
         raise ValueError(f"base64 解码失败: {exc}") from exc
 
-    logger.debug("base64_to_bytes: 解码后大小 %d bytes", len(decoded))
+    # logger.debug(f"base64_to_bytes: 解码后大小 {len(decoded)} bytes")
     return decoded
 
 
@@ -398,11 +426,9 @@ def bytes_to_base64(data: bytes, *, with_data_prefix: bool = False) -> str:
 
     if with_data_prefix:
         fmt = _guess_format_from_bytes(data) or _DEFAULT_FORMAT
-        prefix = f"data:image/{fmt};base64,"
-        logger.debug("bytes_to_base64: 添加前缀, 格式=%s", fmt)
-        return prefix + encoded
+        return f"data:image/{fmt};base64,{encoded}"
 
-    logger.debug("bytes_to_base64: 编码完成 (无前缀), 长度=%d", len(encoded))
+    # logger.debug(f"bytes_to_base64: 编码完成 (无前缀), 长度={len(encoded)}")
     return encoded
 
 
@@ -415,7 +441,6 @@ def base64_to_img(data: str) -> Image.Image:
     Returns:
         Pillow Image 对象。
     """
-    logger.debug("base64_to_img: 开始转换")
     raw_bytes = base64_to_bytes(data)
     return bytes_to_img(raw_bytes)
 
@@ -433,7 +458,6 @@ def img_to_base64(
     Returns:
         base64 编码的字符串。
     """
-    logger.debug("img_to_base64: 开始转换, with_data_prefix=%s", with_data_prefix)
     raw_bytes = img_to_bytes(img, fmt=fmt)
     return bytes_to_base64(raw_bytes, with_data_prefix=with_data_prefix)
 
@@ -447,11 +471,18 @@ class MyImage:
     """通用图像包装类，支持多种输入来源并统一为 Pillow Image。
 
     支持的输入来源（互斥，仅允许传入其中一种）：
-        - path:  本地文件路径（str 或 Path）。
-        - url:   HTTP/HTTPS 图片地址。
-        - data:  原始字节 bytes。
-        - b64:   base64 编码字符串（支持 data URL 前缀）。
-        - img:   已有的 Pillow Image.Image 对象。
+        - path:   本地文件路径（str 或 Path）。
+        - url:    HTTP/HTTPS 图片地址。
+        - byte:   原始字节 bytes。
+        - base64: base64 编码字符串（支持 data URL 前缀）。
+        - img:    已有的 Pillow Image.Image 对象。
+
+    也可通过位置参数 ``source`` 传入，类会自动识别类型。
+
+    支持上下文管理器协议::
+
+        with MyImage(url="https://example.com/photo.jpg") as img:
+            img.save("/tmp/photo.jpg")
 
     Attributes:
         format (str): 图像格式，小写（如 'png', 'jpeg', 'webp'）。
@@ -460,7 +491,7 @@ class MyImage:
         >>> img = MyImage(path="photo.jpg")
         >>> img.format
         'jpeg'
-        >>> img.img.size
+        >>> img.size
         (1920, 1080)
 
         >>> web_img = MyImage(url="https://example.com/image.png")
@@ -475,37 +506,74 @@ class MyImage:
 
     def __init__(
         self,
+        source: Optional[Union[str, Path, bytes, Image.Image]] = None,
         *,
         path: Optional[Union[str, Path]] = None,
         url: Optional[str] = None,
-        bytes: Optional[bytes] = None,
+        byte: Optional[bytes] = None,
+        # 注意: 参数名 base64 会在此作用域内遮蔽同名模块，
+        # 内部通过调用模块级函数（base64_to_bytes 等）间接使用模块，无影响。
         base64: Optional[str] = None,
         img: Optional[Image.Image] = None,
     ) -> None:
+        # ------ 解析位置参数 source ------
+        if source is not None:
+            if isinstance(source, Image.Image):
+                img = source
+            elif isinstance(source, bytes):
+                byte = source
+            elif isinstance(source, Path):
+                path = source
+            elif isinstance(source, str):
+                if source.startswith("data:image/"):
+                    base64 = source
+                elif source.startswith(("http://", "https://")):
+                    url = source
+                elif os.path.isfile(source):
+                    path = source
+                else:
+                    base64 = source
+            else:
+                raise TypeError(
+                    f"source 参数类型不支持: {type(source).__name__}，"
+                    f"期望 str / Path / bytes / Image.Image"
+                )
+
         # ------ 互斥检查 ------
-        sources = {"path": path, "url": url, "bytes": bytes, "base64": base64, "img": img}
+        sources = {
+            "path": path,
+            "url": url,
+            "byte": byte,
+            "base64": base64,
+            "img": img,
+        }
         provided = {k: v for k, v in sources.items() if v is not None}
 
         if len(provided) == 0:
-            raise ValueError("必须提供至少一个图像来源 (path/url/bytes/base64/img)")
+            raise ValueError(
+                "必须提供至少一个图像来源 (path/url/byte/base64/img)"
+            )
         if len(provided) > 1:
             raise ValueError(
                 f"仅允许传入一种图像来源，但同时传入了: {list(provided.keys())}"
             )
 
-        self._img: Image.Image = None
-        self._bytes: bytes = None
-        self._base64: str = None
-        self._format: str = None
+        self._img: Optional[Image.Image] = None
+        self._bytes: Optional[bytes] = None
+        # _base64 始终存储 *纯* base64 字符串（不含 data URL 前缀）
+        self._base64: Optional[str] = None
+        self._format: Optional[str] = None
 
-        # ------ 根据来源进行转换 ------
+        fmt: Optional[str] = None
+
+        # ------ 根据来源进行加载 ------
         if path is not None:
             path = Path(path)
             if not path.exists():
                 raise FileNotFoundError(f"文件不存在: {path}")
             fmt = _guess_format_from_suffix(str(path))
             self._img = Image.open(path)
-            # self._img.load()
+            self._img.load()  # 读入内存，释放文件句柄
             if fmt is None:
                 fmt = _normalize_format(self._img.format)
 
@@ -517,17 +585,18 @@ class MyImage:
                 fmt = _guess_format_from_bytes(raw_bytes)
             self._img = bytes_to_img(raw_bytes)
 
-        elif bytes is not None:
-            self._bytes = bytes
-            fmt = _guess_format_from_bytes(bytes)
-            self._img = bytes_to_img(bytes)
+        elif byte is not None:
+            self._bytes = byte
+            fmt = _guess_format_from_bytes(byte)
+            self._img = bytes_to_img(byte)
 
         elif base64 is not None:
-            self._base64 = base64
-            # 优先从 data URL 前缀解析格式
-            match = _DATA_URL_RE.match(base64.strip())
-            if match:
-                fmt = _normalize_format(match.group("fmt"))
+            # 分离 data URL 前缀，仅缓存纯 base64
+            prefix_fmt, pure_b64 = _strip_data_url_prefix(base64)
+            self._base64 = pure_b64
+            if prefix_fmt:
+                fmt = prefix_fmt
+
             raw_bytes = base64_to_bytes(base64)
             self._bytes = raw_bytes
             if fmt is None:
@@ -539,38 +608,69 @@ class MyImage:
             fmt = _normalize_format(img.format)
 
         # ------ 格式兜底 ------
-        self._format = fmt or _normalize_format(self._img.format) or _DEFAULT_FORMAT
+        self._format = _normalize_format(fmt or self._img.format or _DEFAULT_FORMAT)
 
-    # ---- 属性 ----
+    # ---- 便捷属性 ----
 
     @property
     def img(self) -> Image.Image:
         """返回内部持有的 Pillow Image 对象。"""
         return self._img
-    
+
     @property
-    def bytes(self) -> bytes:
-        """返回当前图像按 self._format 编码后的 bytes。"""
+    def width(self) -> int:
+        """图像宽度（像素）。"""
+        return self._img.width
+
+    @property
+    def height(self) -> int:
+        """图像高度（像素）。"""
+        return self._img.height
+
+    @property
+    def size(self) -> tuple[int, int]:
+        """图像尺寸 ``(宽, 高)``。"""
+        return self._img.size
+
+    @property
+    def mode(self) -> str:
+        """图像色彩模式（如 ``'RGB'``, ``'RGBA'``, ``'L'``）。"""
+        return self._img.mode
+
+    @property
+    def byte(self) -> bytes:
+        """返回当前图像按 self.format 编码后的 bytes（惰性缓存）。"""
         if self._bytes is None:
             self._bytes = img_to_bytes(self._img, fmt=self._format)
         return self._bytes
 
     @property
     def base64(self) -> str:
-        """返回当前图像按 self._format 编码后的纯 base64 字符串（不带前缀）。"""
+        """返回纯 base64 字符串（**不含** data URL 前缀），惰性缓存。"""
         if self._base64 is None:
             self._base64 = img_to_base64(self._img, fmt=self._format)
         return self._base64
 
-    # ---- 方法 ----
+    @property
+    def base64_with_prefix(self) -> str:
+        """返回带 ``data:image/<fmt>;base64,`` 前缀的完整 data URL。"""
+        # 统一通过 self.base64 获取纯 base64，再拼接前缀，避免重复前缀
+        return f"data:image/{self._format};base64,{self.base64}"
 
+    @property
+    def format(self) -> str:
+        """返回当前图像的格式（小写）。"""
+        return self._format
+
+    @property
     def get_info(self) -> dict:
         """获取当前图像的基本信息。
 
         Returns:
             包含 format, size, readable_size, mode, exif 等键的字典。
         """
-        raw = self._bytes
+        # 通过 self.byte 属性触发惰性初始化，避免 self._bytes 为 None
+        raw = self.byte
         size_bytes = len(raw)
 
         # 可读大小
@@ -594,7 +694,7 @@ class MyImage:
                         value = str(value)
                     exif_data[tag_name] = value
         except Exception as exc:
-            logger.error("读取 EXIF 信息时出错: %s", exc)
+            logger.error(f"读取 EXIF 信息时出错: {exc}")
 
         info = {
             "format": self._format,
@@ -604,8 +704,10 @@ class MyImage:
             "exif": exif_data,
         }
 
-        logger.info("MyImage info: %s", info)
+        logger.info(f"MyImage info: {info}")
         return info
+
+    # ---- I/O ----
 
     def save(self, path: Union[str, Path], fmt: Optional[str] = None) -> Path:
         """将图像保存到本地文件。
@@ -633,8 +735,24 @@ class MyImage:
         save_img = _ensure_rgb_for_jpeg(self._img) if fmt == "jpeg" else self._img
 
         save_img.save(str(path), format=pil_fmt)
-        logger.debug("图像已保存至: %s (格式=%s)", path, fmt)
+        logger.debug(f"图像已保存至: {path} (格式={fmt})")
         return path
+
+    # ---- 资源管理 ----
+
+    def close(self) -> None:
+        """关闭内部 Pillow Image 并释放资源。"""
+        if self._img is not None:
+            try:
+                self._img.close()
+            except Exception:
+                pass
+
+    def __enter__(self) -> MyImage:
+        return self
+
+    def __exit__(self, *args) -> None:
+        self.close()
 
     def __repr__(self) -> str:
         return (
