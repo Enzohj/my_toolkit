@@ -45,7 +45,8 @@ pillow_heif.register_heif_opener()
 
 from PIL import Image, ExifTags
 
-from .logger import logger
+from .logger import init_logger
+logger = init_logger(name="image")
 
 # ---------------------------------------------------------------------------
 # 常量与辅助
@@ -55,6 +56,8 @@ from .logger import logger
 SUPPORTED_FORMATS: frozenset[str] = frozenset(
     {"png", "jpeg", "webp", "heif", "gif", "bmp", "tiff", "ico"}
 )
+_ALPHA_MODES = frozenset({"RGBA", "PA", "LA"})
+_HILO_GREY_MODES = frozenset({"I", "F"})
 
 # 格式别名映射（统一到标准名称）
 _FORMAT_ALIASES: dict[str, str] = {
@@ -209,7 +212,7 @@ def _guess_format_from_bytes(data: bytes) -> Optional[str]:
             if pil_fmt:
                 return pil_fmt
     except Exception:
-        logger.warning("无法从 bytes 识别格式")
+        logger.warning("无法从 bytes 识别图像格式")
 
     return None
 
@@ -220,27 +223,38 @@ def _pillow_save_format(fmt: str) -> str:
 
 
 def _ensure_rgb_for_jpeg(img: Image.Image) -> Image.Image:
-    """若目标格式为 JPEG 且图像含不兼容模式，转换为 RGB。
+    """将非 JPEG 兼容模式安全转换为 RGB。
 
-    JPEG 不支持 alpha 通道，也不直接支持 I（32-bit int）和 F（float）模式。
-    此函数统一将这些模式安全转换为 RGB。
-
-    Args:
-        img: 原始 Pillow Image。
-
-    Returns:
-        转换后的 Image（可能是同一个对象）。
+    JPEG 仅原生支持 RGB / L / CMYK。此函数处理含 alpha、调色板、
+    高位深灰度等不兼容模式，确保保存时不会抛出异常。
     """
-    if img.mode in ("RGBA", "PA", "LA"):
-        logger.warning(f"将模式 {img.mode} 转换为 RGB 以兼容 JPEG")
+    mode = img.mode
+
+    # 快速路径：最常见的情况直接返回
+    if mode == "RGB":
+        return img
+
+    if mode in _ALPHA_MODES:
+        logger.debug("将模式 %s 转换为 RGB 以兼容 JPEG", mode)
         return img.convert("RGB")
-    if img.mode == "P":
-        logger.warning("将模式 P 转换为 RGBA 再转 RGB 以正确处理透明色")
+
+    if mode == "P":
+        # 调色板可能含透明色，须先展开为 RGBA 再丢弃 alpha
+        logger.debug("将模式 P 经 RGBA 转换为 RGB 以正确处理透明色")
         return img.convert("RGBA").convert("RGB")
-    if img.mode in ("I", "F"):
-        logger.warning(f"将模式 {img.mode} 转换为 L 再转 RGB 以兼容 JPEG")
+
+    if mode in _HILO_GREY_MODES:
+        # I(32-bit int) / F(float) 先降为 8-bit 灰度再扩展
+        logger.debug("将模式 %s 经 L 转换为 RGB 以兼容 JPEG", mode)
         return img.convert("L").convert("RGB")
-    return img
+
+    # L / CMYK 是 JPEG 原生支持的模式，直接返回
+    if mode in ("L", "CMYK"):
+        return img
+
+    # 兜底：1、YCbCr 等其他罕见模式
+    logger.debug("将模式 %s 转换为 RGB 以兼容 JPEG", mode)
+    return img.convert("RGB")
 
 
 def _strip_data_url_prefix(b64_string: str) -> tuple[Optional[str], str]:
@@ -257,9 +271,20 @@ def _strip_data_url_prefix(b64_string: str) -> tuple[Optional[str], str]:
     if match:
         fmt = _normalize_format(match.group("fmt"))
         pure_b64 = b64_string[match.end() :].strip()
-        logger.debug(f"_strip_data_url_prefix: 检测到 data URL 前缀, 格式={fmt}")
+        logger.debug("检测到 data URL 前缀, 图像格式=%s", fmt)
         return fmt, pure_b64
     return None, b64_string
+
+def readable_bytes_size(size_bytes: int) -> str:
+    """将字节数转换为人类可读的格式（KB、MB、GB）。"""
+    # 可读大小
+    if size_bytes < 1024:
+        readable = f"{size_bytes} B"
+    elif size_bytes < 1024 * 1024:
+        readable = f"{size_bytes / 1024:.2f} KB"
+    else:
+        readable = f"{size_bytes / (1024 * 1024):.2f} MB"
+    return readable
 
 
 # ---------------------------------------------------------------------------
@@ -291,8 +316,6 @@ def download_bytes_from_url(
     if not url or not url.strip().startswith(("http://", "https://")):
         raise ValueError(f"URL 必须以 http:// 或 https:// 开头，收到: {url!r}")
 
-    # logger.debug(f"开始从 URL 下载图片: {url}")
-
     try:
         response = requests.get(url, timeout=timeout, stream=True)
         response.raise_for_status()
@@ -301,7 +324,7 @@ def download_bytes_from_url(
         content_length = response.headers.get("Content-Length")
         if content_length and int(content_length) > max_size:
             raise ImageDownloadError(
-                f"文件大小 ({int(content_length)} bytes) 超过限制 ({max_size} bytes)"
+                f"文件大小: {readable_bytes_size(int(content_length))}, 超过限制: {readable_bytes_size(max_size)}"
             )
 
         # 流式读取，防止大文件撑爆内存
@@ -311,12 +334,12 @@ def download_bytes_from_url(
             downloaded += len(chunk)
             if downloaded > max_size:
                 raise ImageDownloadError(
-                    f"下载数据量 ({downloaded} bytes) 超过限制 ({max_size} bytes)"
+                    f"下载数据量: {readable_bytes_size(downloaded)}, 超过限制: {readable_bytes_size(max_size)}"
                 )
             chunks.append(chunk)
 
         data = b"".join(chunks)
-        # logger.debug(f"下载完成，数据大小: {len(data)} bytes")
+        logger.debug("下载完成，数据大小: %s", readable_bytes_size(len(data)))
         return data
 
     except requests.Timeout as exc:
@@ -347,14 +370,14 @@ def bytes_to_img(data: bytes) -> Image.Image:
     if not data:
         raise ImageFormatError("图像数据为空")
 
-    # logger.debug(f"bytes_to_img: 输入数据大小 {len(data)} bytes")
+    logger.debug("输入数据大小: %s", readable_bytes_size(len(data)))
     try:
         buf = io.BytesIO(data)
         img = Image.open(buf)
         img.load()  # 确保像素数据完全读入内存，防止 buf 被 GC 后读取失败
         return img
     except Exception as exc:
-        raise ImageFormatError(f"无法解析图像数据: {exc}") from exc
+        raise ImageFormatError("无法解析图像数据: %s", exc) from exc
 
 
 def img_to_bytes(img: Image.Image, fmt: Optional[str] = None) -> bytes:
@@ -380,7 +403,7 @@ def img_to_bytes(img: Image.Image, fmt: Optional[str] = None) -> bytes:
 
     save_img.save(buf, format=save_fmt)
     data = buf.getvalue()
-    # logger.debug(f"img_to_bytes: 编码为 {fmt}, 大小 {len(data)} bytes")
+    logger.debug("将图像编码为 %s, 大小: %s", fmt, readable_bytes_size(len(data)))
     return data
 
 
@@ -408,7 +431,7 @@ def base64_to_bytes(data: str) -> bytes:
     except Exception as exc:
         raise ValueError(f"base64 解码失败: {exc}") from exc
 
-    # logger.debug(f"base64_to_bytes: 解码后大小 {len(decoded)} bytes")
+    logger.debug("解码后大小: %d KB", len(decoded) / 1024)
     return decoded
 
 
@@ -428,7 +451,7 @@ def bytes_to_base64(data: bytes, *, with_data_prefix: bool = False) -> str:
         fmt = _guess_format_from_bytes(data) or _DEFAULT_FORMAT
         return f"data:image/{fmt};base64,{encoded}"
 
-    # logger.debug(f"bytes_to_base64: 编码完成 (无前缀), 长度={len(encoded)}")
+    logger.debug("编码后长度=%d", len(encoded))
     return encoded
 
 
@@ -535,7 +558,7 @@ class MyImage:
                     base64 = source
             else:
                 raise TypeError(
-                    f"source 参数类型不支持: {type(source).__name__}，"
+                    f"source 参数类型不支持: {type(source).__name__}, "
                     f"期望 str / Path / bytes / Image.Image"
                 )
 
@@ -560,8 +583,7 @@ class MyImage:
 
         self._img: Optional[Image.Image] = None
         self._bytes: Optional[bytes] = None
-        # _base64 始终存储 *纯* base64 字符串（不含 data URL 前缀）
-        self._base64: Optional[str] = None
+        self._base64: Optional[str] = None # 始终存储 *纯* base64 字符串（不含 data URL 前缀）
         self._format: Optional[str] = None
 
         fmt: Optional[str] = None
@@ -571,37 +593,36 @@ class MyImage:
             path = Path(path)
             if not path.exists():
                 raise FileNotFoundError(f"文件不存在: {path}")
-            fmt = _guess_format_from_suffix(str(path))
             self._img = Image.open(path)
             self._img.load()  # 读入内存，释放文件句柄
+            fmt = self._img.format
             if fmt is None:
-                fmt = _normalize_format(self._img.format)
+                fmt = _guess_format_from_suffix(str(path))
 
         elif url is not None:
-            fmt = _guess_format_from_suffix(url)
             raw_bytes = download_bytes_from_url(url)
             self._bytes = raw_bytes
-            if fmt is None:
-                fmt = _guess_format_from_bytes(raw_bytes)
             self._img = bytes_to_img(raw_bytes)
+            fmt = self._img.format
+            if fmt is None:
+                fmt = _guess_format_from_suffix(url)
 
         elif byte is not None:
             self._bytes = byte
-            fmt = _guess_format_from_bytes(byte)
             self._img = bytes_to_img(byte)
+            fmt = self._img.format
+            if fmt is None:
+                fmt = _guess_format_from_bytes(byte)
 
         elif base64 is not None:
             # 分离 data URL 前缀，仅缓存纯 base64
             prefix_fmt, pure_b64 = _strip_data_url_prefix(base64)
             self._base64 = pure_b64
-            if prefix_fmt:
-                fmt = prefix_fmt
-
             raw_bytes = base64_to_bytes(base64)
             self._bytes = raw_bytes
-            if fmt is None:
-                fmt = _guess_format_from_bytes(raw_bytes)
             self._img = bytes_to_img(raw_bytes)
+            fmt = self._img.format or prefix_fmt
+
 
         elif img is not None:
             self._img = img
@@ -650,7 +671,7 @@ class MyImage:
         if self._base64 is None:
             self._base64 = img_to_base64(self._img, fmt=self._format)
         return self._base64
-
+    
     @property
     def base64_with_prefix(self) -> str:
         """返回带 ``data:image/<fmt>;base64,`` 前缀的完整 data URL。"""
@@ -662,7 +683,6 @@ class MyImage:
         """返回当前图像的格式（小写）。"""
         return self._format
 
-    @property
     def get_info(self) -> dict:
         """获取当前图像的基本信息。
 
@@ -672,14 +692,7 @@ class MyImage:
         # 通过 self.byte 属性触发惰性初始化，避免 self._bytes 为 None
         raw = self.byte
         size_bytes = len(raw)
-
-        # 可读大小
-        if size_bytes < 1024:
-            readable = f"{size_bytes} B"
-        elif size_bytes < 1024 * 1024:
-            readable = f"{size_bytes / 1024:.2f} KB"
-        else:
-            readable = f"{size_bytes / (1024 * 1024):.2f} MB"
+        readable = readable_bytes_size(size_bytes)
 
         # EXIF 信息
         exif_data: dict = {}
@@ -699,12 +712,11 @@ class MyImage:
         info = {
             "format": self._format,
             "size": self._img.size,
-            "readable_size": readable,
             "mode": self._img.mode,
+            "bytes_size": readable,
             "exif": exif_data,
         }
 
-        logger.info(f"MyImage info: {info}")
         return info
 
     # ---- I/O ----
@@ -724,7 +736,7 @@ class MyImage:
 
         # 优先从路径后缀推断格式
         if fmt is None:
-            fmt = _guess_format_from_suffix(str(path)) or self._format
+            fmt = self._format or _guess_format_from_suffix(str(path))
         else:
             fmt = _normalize_format(fmt) or self._format
 

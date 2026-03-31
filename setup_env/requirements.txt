@@ -1,6 +1,6 @@
-loguru
+# loguru
 pandas
 huggingface_hub
 pyarrow==20.0
 pillow_heif
-fastparquet
+# fastparquet

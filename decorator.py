@@ -1,59 +1,149 @@
+import asyncio
+import inspect
+import random
 import time
 import traceback
+from contextlib import contextmanager
 from functools import wraps
-from typing import Any, Callable, Optional, Tuple, Type, TypeVar
+from typing import Any, Callable, Optional, Tuple, Type, TypeVar, Union
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 
-from .logger import logger
+try:
+    from typing import ParamSpec
+except ImportError:
+    from typing_extensions import ParamSpec
 
-F = TypeVar("F", bound=Callable[..., Any])
+from .logger import init_logger
+logger = init_logger(name="decorator")
+
+P = ParamSpec("P")
+R = TypeVar("R")
 
 __all__ = ["timer", "timeout", "retry"]
+
+_UNSET = object()  # 哨兵值，区分 "返回 None" 与 "未设置"
 
 
 # ────────────────────────────── timer ──────────────────────────────
 
-def timer(func: F) -> F:
-    """记录函数执行耗时（秒），无论成功或异常均会输出。"""
+class timer:
+    """
+    记录函数执行耗时（秒），无论成功或异常均会输出。
 
-    @wraps(func)
-    def wrapper(*args, **kwargs):
-        start = time.perf_counter()
-        try:
-            return func(*args, **kwargs)
-        finally:
-            elapsed = time.perf_counter() - start
-            logger.info(f"Function '{func.__name__}' elapsed: {elapsed:.4f}s")
+    用法:
+        # 作为装饰器
+        @timer
+        def foo(): ...
 
-    return wrapper  # type: ignore[return-value]
+        @timer
+        async def bar(): ...
+
+        # 作为上下文管理器
+        with timer("load_data"):
+            heavy_io()
+    """
+
+    def __new__(cls, func_or_label: Union[Callable[P, R], str, None] = None):
+        # @timer  —— 直接装饰（无括号）
+        if callable(func_or_label):
+            instance = super().__new__(cls)
+            instance._label = func_or_label.__name__
+            return instance._wrap(func_or_label)
+
+        # timer("label") —— 上下文管理器
+        instance = super().__new__(cls)
+        instance._label = func_or_label or "block"
+        return instance
+
+    def __init__(self, func_or_label: Union[Callable, str, None] = None):
+        # 当作为装饰器直接返回 wrapper 时，__init__ 不会被调用到 self 上
+        pass
+
+    # ── 装饰器路径 ──
+    def _wrap(self, func: Callable[P, R]) -> Callable[P, R]:
+        label = func.__name__
+
+        if inspect.iscoroutinefunction(func):
+            @wraps(func)
+            async def async_wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
+                start = time.perf_counter()
+                try:
+                    return await func(*args, **kwargs)
+                finally:
+                    logger.info(f"Function '{label}' elapsed: {(time.perf_counter() - start):.4f} s")
+
+            return async_wrapper  # type: ignore[return-value]
+
+        @wraps(func)
+        def sync_wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
+            start = time.perf_counter()
+            try:
+                return func(*args, **kwargs)
+            finally:
+                logger.info(f"Function '{label}' elapsed: {(time.perf_counter() - start):.4f} s")
+
+        return sync_wrapper  # type: ignore[return-value]
+
+    # ── 上下文管理器路径 ──
+    def __enter__(self):
+        self._start = time.perf_counter()
+        return self
+
+    def __exit__(self, *exc_info):
+        logger.info(f"Block '{self._label}' elapsed: {(time.perf_counter() - self._start):.4f} s")
+        return False
+
+    @property
+    def elapsed(self) -> float:
+        """在上下文管理器内部调用，返回当前已过时间。"""
+        return time.perf_counter() - self._start
 
 
 # ────────────────────────────── timeout ──────────────────────────────
 
-def timeout(seconds: float) -> Callable[[F], F]:
+def timeout(seconds: float) -> Callable[[Callable[P, R]], Callable[P, R]]:
     """
     限制函数执行时间。超时后抛出 TimeoutError。
 
-    注意：底层使用 ThreadPoolExecutor，超时后线程本身不会被强制终止，
-    仅在调用侧抛出异常。如需真正中断，请考虑 multiprocessing 方案。
+    - 同步函数: 使用 daemon ThreadPoolExecutor，超时后线程不会阻止进程退出。
+      注意线程本身不会被强制终止，仅在调用侧抛出异常。
+    - 异步函数: 使用 asyncio.wait_for，超时后任务被取消。
     """
     if seconds <= 0:
-        raise ValueError(f"timeout seconds must be positive, got {seconds}")
+        raise ValueError("timeout seconds must be positive, got %s" % seconds)
 
-    def decorator(func: F) -> F:
+    def decorator(func: Callable[P, R]) -> Callable[P, R]:
+
+        if inspect.iscoroutinefunction(func):
+            @wraps(func)
+            async def async_wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
+                try:
+                    return await asyncio.wait_for(
+                        func(*args, **kwargs), timeout=seconds
+                    )
+                except asyncio.TimeoutError:
+                    raise TimeoutError(
+                        "Function '%s' timed out after %ss" % (func.__name__, seconds)
+                    ) from None
+
+            return async_wrapper  # type: ignore[return-value]
+
         @wraps(func)
-        def wrapper(*args, **kwargs):
-            with ThreadPoolExecutor(max_workers=1) as executor:
+        def sync_wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
+            with ThreadPoolExecutor(
+                max_workers=1,
+                thread_name_prefix=f"timeout-{func.__name__}",
+            ) as executor:
                 future = executor.submit(func, *args, **kwargs)
                 try:
                     return future.result(timeout=seconds)
                 except FutureTimeoutError:
                     future.cancel()
                     raise TimeoutError(
-                        f"Function '{func.__name__}' timed out after {seconds}s"
-                    )
+                        "Function '%s' timed out after %ss" % (func.__name__, seconds)
+                    ) from None
 
-        return wrapper  # type: ignore[return-value]
+        return sync_wrapper  # type: ignore[return-value]
 
     return decorator
 
@@ -64,27 +154,76 @@ def retry(
     max_attempts: int = 3,
     delay: float = 0.1,
     backoff: float = 1,
+    jitter: float = 0,
     exceptions: Tuple[Type[BaseException], ...] = (Exception,),
-    fail_return: Optional[Any] = None,
+    fail_return: Any = _UNSET,
     raise_on_failure: bool = False,
-) -> Callable[[F], F]:
+) -> Callable[[Callable[P, R]], Callable[P, R]]:
     """
-    重试装饰器：在指定异常发生时自动重试。
+    重试装饰器：在指定异常发生时自动重试。支持同步和异步函数。
 
     参数:
-        max_attempts:    最大尝试次数（≥1）
-        delay:           初始延迟时间（秒）
-        backoff:         退避因子（1=固定间隔，>1=指数退避）
-        exceptions:      需要捕获并重试的异常类型元组
-        fail_return:     所有尝试失败后的默认返回值（仅 raise_on_failure=False 时生效）
-        raise_on_failure: True 时在最终失败后重新抛出异常，False 时返回 fail_return
+        max_attempts:     最大尝试次数（>= 1）
+        delay:            初始延迟时间（秒）
+        backoff:          退避因子（1=固定间隔，>1=指数退避）
+        jitter:           随机抖动上限（秒），实际睡眠 = sleep_time + random(0, jitter)，
+                          用于防止多实例同步重试造成惊群效应
+        exceptions:       需要捕获并重试的异常类型元组
+        fail_return:      所有尝试失败后的默认返回值（仅 raise_on_failure=False 时生效）；
+                          未设置且 raise_on_failure=False 时返回 None
+        raise_on_failure:  True 时在最终失败后重新抛出最后一次异常
     """
     if max_attempts < 1:
-        raise ValueError(f"max_attempts must be >= 1, got {max_attempts}")
+        raise ValueError("max_attempts must be >= 1, got %s" % max_attempts)
 
-    def decorator(func: F) -> F:
+    effective_fail_return = None if fail_return is _UNSET else fail_return
+
+    def decorator(func: Callable[P, R]) -> Callable[P, R]:
+
+        def _compute_sleep(attempt: int) -> float:
+            base = delay * (backoff ** (attempt - 1))
+            return base + random.uniform(0, jitter) if jitter > 0 else base
+
+        def _log_retry(attempt: int, exc: BaseException, sleep_time: float):
+            logger.debug(
+                f"[retry] '{func.__name__}' attempt {attempt}/{max_attempts} failed: {exc}; retrying in {sleep_time} …",
+            )
+
+        def _log_exhausted(last_exc: BaseException):
+            logger.error(
+                f"[retry] '{func.__name__}' exhausted {max_attempts} attempts. Last error: {last_exc}",
+            )
+            logger.error("[retry] traceback:\n%s", traceback.format_exc())
+
+        # ── 异步版本 ──
+        if inspect.iscoroutinefunction(func):
+            @wraps(func)
+            async def async_wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
+                last_exception: Optional[BaseException] = None
+
+                for attempt in range(1, max_attempts + 1):
+                    try:
+                        return await func(*args, **kwargs)
+                    except exceptions as exc:
+                        last_exception = exc
+
+                        if attempt < max_attempts:
+                            sleep_time = _compute_sleep(attempt)
+                            _log_retry(attempt, exc, sleep_time)
+                            await asyncio.sleep(sleep_time)
+                        else:
+                            _log_exhausted(last_exception)
+                            logger.debug(f"[retry] call args={args}, kwargs={kwargs}")
+
+                if raise_on_failure:
+                    raise last_exception  # type: ignore[misc]
+                return effective_fail_return  # type: ignore[return-value]
+
+            return async_wrapper  # type: ignore[return-value]
+
+        # ── 同步版本 ──
         @wraps(func)
-        def wrapper(*args, **kwargs):
+        def sync_wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
             last_exception: Optional[BaseException] = None
 
             for attempt in range(1, max_attempts + 1):
@@ -94,27 +233,17 @@ def retry(
                     last_exception = exc
 
                     if attempt < max_attempts:
-                        sleep_time = delay * (backoff ** (attempt - 1))
-                        logger.debug(
-                            f"[retry] '{func.__name__}' attempt {attempt}/{max_attempts} "
-                            f"failed: {exc}; retrying in {sleep_time:.2f}s …"
-                        )
+                        sleep_time = _compute_sleep(attempt)
+                        _log_retry(attempt, exc, sleep_time)
                         time.sleep(sleep_time)
                     else:
-                        logger.error(
-                            f"[retry] '{func.__name__}' exhausted {max_attempts} attempts. "
-                            f"Last error: {last_exception}"
-                        )
-                        logger.error(f"[retry] traceback:\n{traceback.format_exc()}")
-                        logger.debug(
-                            f"[retry] call args={args}, kwargs={kwargs}"
-                        )
+                        _log_exhausted(last_exception)
+                        logger.debug(f"[retry] call args={args}, kwargs={kwargs}")
 
-            # 所有尝试均失败
             if raise_on_failure:
                 raise last_exception  # type: ignore[misc]
-            return fail_return
+            return effective_fail_return  # type: ignore[return-value]
 
-        return wrapper  # type: ignore[return-value]
+        return sync_wrapper  # type: ignore[return-value]
 
     return decorator

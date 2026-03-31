@@ -34,7 +34,8 @@ from concurrent.futures import (
     as_completed,
 )
 
-from .logger import logger
+from .logger import init_logger
+logger = init_logger(name="mp")
 import pandas as pd
 try:
     from tqdm.auto import tqdm  # auto 可自动适配 notebook / terminal
