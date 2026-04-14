@@ -17,15 +17,16 @@ multi_process
 
 from __future__ import annotations
 
+import gc
 import os
 from typing import (
     Any,
     Callable,
     Iterable,
+    Iterator,
     List,
     Literal,
     Optional,
-    Union,
 )
 from concurrent.futures import (
     ThreadPoolExecutor,
@@ -35,8 +36,24 @@ from concurrent.futures import (
 )
 
 from .logger import init_logger
-logger = init_logger(name="mp")
-import pandas as pd
+
+logger = init_logger(name=__name__)
+
+# 延迟导入 pandas，避免不需要时浪费内存
+_pd = None
+
+
+def _get_pd():
+    global _pd
+    if _pd is None:
+        try:
+            import pandas as pd
+            _pd = pd
+        except ImportError:
+            _pd = False  # 标记为不可用，避免反复导入
+    return _pd if _pd is not False else None
+
+
 try:
     from tqdm.auto import tqdm  # auto 可自动适配 notebook / terminal
 except ImportError:
@@ -56,6 +73,9 @@ NUM_WORKERS: int = int(
     os.environ.get("NUM_WORKERS", min(os.cpu_count() or 1, 8))
 )
 
+# 分批提交的默认批次大小，防止一次性创建过多 Future 导致 OOM
+_DEFAULT_BATCH_SIZE = 5000
+
 
 # ---------------------------------------------------------------------------
 # 内部辅助
@@ -74,20 +94,41 @@ def _call_func(func: Callable, element: Any) -> Any:
     return func(element)
 
 
-def _resolve_iterable(iterable: Any) -> tuple[list, Optional[int]]:
-    """将各种可迭代类型统一转为 list，并在遇到 DataFrame 时转为 records。"""
-    if isinstance(iterable, pd.DataFrame):
-        iterable = iterable.to_dict(orient="records")
+def _resolve_iterable(iterable: Any) -> tuple[list, int]:
+    """将各种可迭代类型统一转为 list，并在遇到 DataFrame 时转为 records。
+
+    Returns
+    -------
+    (list, length)
+    """
+    pd = _get_pd()
+    if pd is not None and isinstance(iterable, pd.DataFrame):
+        items = iterable.to_dict(orient="records")
+        return items, len(items)
+
+    if isinstance(iterable, (list, tuple)):
+        return iterable, len(iterable)
+
+    # 有 __len__ 和 __iter__ 的类序列对象（如 ndarray、range 等）
     if hasattr(iterable, "__len__") and hasattr(iterable, "__iter__"):
         return iterable, len(iterable)
-    else:
-        logger.warning(f"!!! pay attention: iterable type is {type(iterable)}, try convert to list...")
-        try:
-            iterable = list(iterable)
-        except Exception as e:
-            logger.error(f"convert to list failed: {e}")
-            raise
-        return iterable, len(iterable)
+
+    # 生成器 / 纯迭代器 — 必须物化
+    logger.warning(
+        f"iterable type is {type(iterable).__name__}, materializing to list..."
+    )
+    try:
+        items = list(iterable)
+    except Exception as e:
+        logger.error(f"Failed to materialize iterable: {e}")
+        raise
+    return items, len(items)
+
+
+def _chunked(seq: Any, size: int) -> Iterator[tuple[list, int]]:
+    """将序列按 size 分批 yield，避免一次性生成所有 Future。"""
+    for start in range(0, len(seq), size):
+        yield seq[start: start + size], start
 
 
 # ---------------------------------------------------------------------------
@@ -102,6 +143,7 @@ def apply_parallel(
     total_num: Optional[int] = None,
     error_policy: Literal["store", "raise", "ignore"] = "store",
     progress_desc: Optional[str] = None,
+    batch_size: Optional[int] = None,
 ) -> List[Any]:
     """对 *iterable* 中的每个元素并行调用 *func*，返回与输入顺序严格一致的结果列表。
 
@@ -111,15 +153,12 @@ def apply_parallel(
         任意可迭代对象（列表、元组、生成器、``pandas.DataFrame`` 等）。
         当传入 DataFrame 时，自动按行转为 ``dict`` 列表。
     func : callable
-        对每个元素执行的函数。根据元素类型自动选择解包方式：
+        对每个元素执行的函数。根据元素类型自动选择解包方式。
     method : ``"thread"`` | ``"process"``, default ``"thread"``
         并行方式。传入其他值将抛出 ``ValueError``。
     num_workers : int, default ``NUM_WORKERS``
-        最大并行工作者数量。会被自动裁剪为 ``[1, total_num]`` 范围。
     show_progress : bool, default ``True``
-        是否通过 ``tqdm`` 显示进度条（未安装 tqdm 时自动跳过）。
     total_num : int | None, default ``None``
-        总任务数。为 ``None`` 时自动推断。
     error_policy : ``"store"`` | ``"raise"`` | ``"ignore"``, default ``"store"``
         任务异常处理策略：
         - ``"store"``  — 将异常对象存入结果列表对应位置（默认，向后兼容）。
@@ -127,6 +166,9 @@ def apply_parallel(
         - ``"ignore"`` — 记录日志，结果位置填 ``None``。
     progress_desc : str | None, default ``None``
         自定义进度条描述文字。为 ``None`` 时使用默认格式。
+    batch_size : int | None, default ``None``
+        分批提交的批次大小。为 ``None`` 时，当任务数 > 10000 自动启用
+        (默认 5000)，否则一次性提交。设为 0 或负数表示禁用分批。
 
     Returns
     -------
@@ -157,18 +199,30 @@ def apply_parallel(
             f"error_policy 参数仅支持 'store' / 'raise' / 'ignore'，收到: {error_policy!r}"
         )
 
-    # ---- 2. 物化可迭代对象并构建索引 -------------------------------------
-    items, count_num = _resolve_iterable(iterable)
-    total_num = total_num or count_num 
+    # ---- 2. 物化可迭代对象 -----------------------------------------------
+    items, inferred_total = _resolve_iterable(iterable)
+    total_num = total_num or inferred_total
+
+    # 边界: 空任务直接返回
+    if total_num == 0:
+        return []
 
     # 裁剪 num_workers 到合理范围
-    if total_num is not None:
-        num_workers = max(1, min(num_workers, total_num))
+    num_workers = max(1, min(num_workers, total_num))
 
-    # ---- 3. 选择执行器 ---------------------------------------------------
+    # ---- 3. 决定是否分批提交 ---------------------------------------------
+    if batch_size is None:
+        # 超过 10000 条自动启用分批，防止 Future 过多占满内存
+        effective_batch = _DEFAULT_BATCH_SIZE if total_num > 10000 else total_num
+    elif batch_size <= 0:
+        effective_batch = total_num  # 禁用分批
+    else:
+        effective_batch = batch_size
+
+    # ---- 4. 选择执行器 ---------------------------------------------------
     executor_cls = _EXECUTOR_MAP[method]
 
-    # ---- 4. 进度条准备 ---------------------------------------------------
+    # ---- 5. 进度条准备 ---------------------------------------------------
     use_tqdm = show_progress and tqdm is not None
     if show_progress and tqdm is None:
         logger.warning(
@@ -177,53 +231,73 @@ def apply_parallel(
         )
 
     logger.info(
-        f"apply_parallel 启动 | method={method}, num_workers={num_workers}, total_num={total_num}, error_policy={error_policy}",
+        f"apply_parallel 启动 | method={method}, workers={num_workers}, "
+        f"total={total_num}, batch={effective_batch}, error_policy={error_policy}",
     )
 
-    # ---- 5. 提交与收集 ---------------------------------------------------
+    # ---- 6. 提交与收集 ---------------------------------------------------
     results: list = [None] * total_num
     error_count = 0
+    completed_count = 0
+    should_abort = False  # raise 策略下的中止标志
 
-    with executor_cls(max_workers=num_workers) as executor:
-        future_to_idx: dict[Future, int] = {
-            executor.submit(_call_func, func, elem): idx
-            for idx, elem in enumerate(items)
-        }
-
-        iterator = as_completed(future_to_idx)
-        if use_tqdm:
-            iterator = tqdm(
-                iterator,
-                total=total_num,
-                desc=progress_desc,
-                dynamic_ncols=True,
-            )
-
-        for future in iterator:
-            idx = future_to_idx[future]
-            try:
-                results[idx] = future.result()
-            except Exception as exc:
-                error_count += 1
-                logger.error(
-                    f"任务 #{idx} 执行失败: {exc}",
-                )
-                if error_policy == "raise":
-                    # 取消尚未开始的任务
-                    for f in future_to_idx:
-                        f.cancel()
-                    raise RuntimeError(
-                        f"任务 #{idx} 执行失败: {exc}"
-                    ) from exc
-                elif error_policy == "store":
-                    results[idx] = exc
-                # error_policy == "ignore" → results[idx] 保持 None
-
-    # ---- 6. 日志汇总 -----------------------------------------------------
-    if error_count:
-        logger.warning(
-            f"共有 {error_count} / {total_num} 个任务执行失败",
+    pbar = None
+    if use_tqdm:
+        pbar = tqdm(
+            total=total_num,
+            desc=progress_desc,
+            dynamic_ncols=True,
         )
+
+    try:
+        with executor_cls(max_workers=num_workers) as executor:
+            for chunk, chunk_start in _chunked(items, effective_batch):
+                if should_abort:
+                    break
+
+                # 提交当前批次
+                future_to_idx: dict[Future, int] = {}
+                for local_idx, elem in enumerate(chunk):
+                    global_idx = chunk_start + local_idx
+                    fut = executor.submit(_call_func, func, elem)
+                    future_to_idx[fut] = global_idx
+
+                # 收集当前批次结果
+                for future in as_completed(future_to_idx):
+                    idx = future_to_idx[future]
+                    try:
+                        results[idx] = future.result()
+                    except Exception as exc:
+                        error_count += 1
+                        logger.error(f"任务 #{idx} 执行失败: {exc}")
+
+                        if error_policy == "raise":
+                            should_abort = True
+                            # 取消当前批次尚未开始的任务
+                            for f in future_to_idx:
+                                f.cancel()
+                            raise RuntimeError(
+                                f"任务 #{idx} 执行失败: {exc}"
+                            ) from exc
+                        elif error_policy == "store":
+                            results[idx] = exc
+                        # "ignore" → results[idx] 保持 None
+
+                    completed_count += 1
+                    if pbar is not None:
+                        pbar.update(1)
+
+                # 批次间释放 Future 引用，允许 GC 回收
+                del future_to_idx
+                gc.collect()
+
+    finally:
+        if pbar is not None:
+            pbar.close()
+
+    # ---- 7. 日志汇总 -----------------------------------------------------
+    if error_count:
+        logger.warning(f"共有 {error_count} / {total_num} 个任务执行失败")
     else:
         logger.info(f"全部 {total_num} 个任务执行完成")
 
