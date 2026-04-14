@@ -6,7 +6,7 @@ file.py — 统一的文件读写工具模块
 """
 
 from .logger import init_logger
-logger = init_logger(name="file")
+logger = init_logger(name=__name__)
 
 import csv
 import json
@@ -104,7 +104,7 @@ def write_txt(
     mode = "a" if append else "w"
     with open(file_path, mode, encoding=encoding) as f:
         if isinstance(content, list):
-            f.writelines(line + "\n" for line in content)
+            f.writelines(str(line) + "\n" for line in content)
             logger.info(
                 f"Write {len(content)} lines to '{file_path}' "
                 f"in {'append' if append else 'write'} mode"

@@ -46,7 +46,7 @@ pillow_heif.register_heif_opener()
 from PIL import Image, ExifTags
 
 from .logger import init_logger
-logger = init_logger(name="image")
+logger = init_logger(name=__name__)
 
 # ---------------------------------------------------------------------------
 # 常量与辅助

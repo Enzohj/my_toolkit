@@ -33,7 +33,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Sequence
 
 from .logger import init_logger
-logger = init_logger(name="benchmark")
+logger = init_logger(name=__name__)
 
 __all__ = ["benchmark", "print_report"]
 

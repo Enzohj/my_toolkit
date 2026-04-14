@@ -14,7 +14,7 @@ except ImportError:
     from typing_extensions import ParamSpec
 
 from .logger import init_logger
-logger = init_logger(name="decorator")
+logger = init_logger(name=__name__)
 
 P = ParamSpec("P")
 R = TypeVar("R")
