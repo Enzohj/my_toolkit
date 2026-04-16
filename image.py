@@ -595,24 +595,18 @@ class MyImage:
                 raise FileNotFoundError(f"文件不存在: {path}")
             self._img = Image.open(path)
             self._img.load()  # 读入内存，释放文件句柄
-            fmt = self._img.format
-            if fmt is None:
-                fmt = _guess_format_from_suffix(str(path))
+            fmt = _guess_format_from_suffix(str(path))
 
         elif url is not None:
             raw_bytes = download_bytes_from_url(url)
             self._bytes = raw_bytes
             self._img = bytes_to_img(raw_bytes)
-            fmt = self._img.format
-            if fmt is None:
-                fmt = _guess_format_from_suffix(url)
+            fmt = _guess_format_from_suffix(url)
 
         elif byte is not None:
             self._bytes = byte
             self._img = bytes_to_img(byte)
-            fmt = self._img.format
-            if fmt is None:
-                fmt = _guess_format_from_bytes(byte)
+            fmt = _guess_format_from_bytes(byte)
 
         elif base64 is not None:
             # 分离 data URL 前缀，仅缓存纯 base64
@@ -621,7 +615,7 @@ class MyImage:
             raw_bytes = base64_to_bytes(base64)
             self._bytes = raw_bytes
             self._img = bytes_to_img(raw_bytes)
-            fmt = self._img.format or prefix_fmt
+            fmt = prefix_fmt or _guess_format_from_bytes(raw_bytes)
 
 
         elif img is not None:
